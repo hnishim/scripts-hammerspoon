@@ -1,14 +1,15 @@
 local M = {}
 
 local modifiers = { "cmd", "alt", "shift" }
-local keychainService = "com.hnishim.raycast-gemini"
+local keychainService = "my.gemini-api.hammerspoon"
 local keychainTimeout = 10
 local httpTimeout = 65
 local operationSequence = 0
+local promptDir = os.getenv("HOME") .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/prompts/ai-commands/"
 local commands = {
-  B = { prompt = "/Users/hnishim/Library/Mobile Documents/com~apple~CloudDocs/Dev/prompts/ai-commands/bio-ai_expert.md", model = "gemini-flash-lite-latest" },
-  R = { prompt = "/Users/hnishim/Library/Mobile Documents/com~apple~CloudDocs/Dev/prompts/ai-commands/review-text_compact.md", model = "gemini-flash-lite-latest" },
-  T = { prompt = "/Users/hnishim/Library/Mobile Documents/com~apple~CloudDocs/Dev/prompts/ai-commands/translate.md", model = "gemini-flash-lite-latest" },
+  B = { prompt = promptDir .. "bio-ai_expert.md", model = "gemini-flash-lite-latest" },
+  R = { prompt = promptDir .. "review-text_compact.md", model = "gemini-flash-lite-latest" },
+  T = { prompt = promptDir .. "translate.md", model = "gemini-flash-lite-latest" },
 }
 
 local activeTask
