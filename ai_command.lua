@@ -1,4 +1,5 @@
 local M = {}
+local hud = require("hud")
 
 local modifiers = { "cmd", "alt", "shift" }
 local keychainService = "my.gemini-api.hammerspoon"
@@ -71,6 +72,7 @@ local function release(state, errorMessage)
   stopTimer(state.watchdog)
   state.watchdog = nil
   if activeTask == state then activeTask = nil end
+  hud.close()
   if errorMessage then showSafeError() end
   return true
 end
@@ -257,8 +259,9 @@ local function startGemini(state, command, prompt, apiKey, target)
       finishReplace(target, response, function(errorMessage) release(state, errorMessage) end)
       return
     end
+    release(state)
     local showOK = pcall(showResult, response)
-    release(state, not showOK)
+    if not showOK then showSafeError() end
   end
   local timerOK, timer = scheduleTimer(httpTimeout, function()
     if not isActive(state) then return end
@@ -338,6 +341,7 @@ function M.run(command, input, requestedOutput, target)
   operationSequence = operationSequence + 1
   local state = { token = operationSequence, done = false, keyTask = nil, watchdog = nil }
   activeTask = state
+  hud.show("Gemini処理中...")
   startKeychain(state, command, prompt, target)
 end
 
@@ -356,6 +360,11 @@ local function invoke(command, key)
 end
 
 function M.start()
+  if activeTask then
+    release(activeTask)
+  else
+    hud.close()
+  end
   for key, command in pairs(commands) do hs.hotkey.bind(modifiers, key, function() invoke(command, key) end) end
 end
 
