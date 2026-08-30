@@ -1,7 +1,3 @@
-local bindings = {}
-local bindingHandles = {}
-local deletedHandles = {}
-local bindFailureKey = nil
 local taskCallbacks = setmetatable({}, { __mode = "v" })
 local taskReferences = setmetatable({}, { __mode = "v" })
 local taskCalls = {}
@@ -28,10 +24,6 @@ local setFrames = {}
 local successMessage = "ウィンドウのサイズ変更に成功しました。"
 local raycastRoot = (os.getenv("HOME") or "") .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/raycast"
 
-local function signature(modifiers, key)
-  return table.concat(modifiers, "+") .. ":" .. key
-end
-
 local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
 end
@@ -51,12 +43,6 @@ end
 local function assertTable(actual, expected, message)
   assertEqual(#actual, #expected, message .. " length")
   for index, value in ipairs(expected) do assertEqual(actual[index], value, message .. "[" .. index .. "]") end
-end
-
-local function handleCount()
-  local count = 0
-  for _ in pairs(bindingHandles) do count = count + 1 end
-  return count
 end
 
 local function activeTimerCount()
@@ -115,25 +101,6 @@ _G.hs = {
         duration = duration,
         kind = message == successMessage and "success" or "failure",
       }
-    end,
-  },
-  hotkey = {
-    bind = function(modifiers, key, callback)
-      local name = signature(modifiers, key)
-      if name == bindFailureKey then error("hotkey bind failure") end
-      local handle = {
-        name = name,
-        delete = function(self)
-          if self.deleted then return end
-          self.deleted = true
-          if bindingHandles[self.name] == self then bindingHandles[self.name] = nil end
-          if bindings[self.name] == callback then bindings[self.name] = nil end
-          deletedHandles[#deletedHandles + 1] = self
-        end,
-      }
-      bindingHandles[name] = handle
-      bindings[name] = callback
-      return handle
     end,
   },
   timer = {
@@ -204,15 +171,12 @@ _G.hs = {
 }
 
 package.path = "./?.lua;" .. package.path
-local utilityCommand = require("utility_command")
+local utilityCommand = require("actions.utility_command")
+local windowManagement = require("actions.window_management")
 
 local function press(modifiers, key)
-  local name = signature(modifiers, key)
-  local handle = bindingHandles[name]
-  assert(handle and not handle.deleted, "missing live binding " .. name)
-  local callback = bindings[name]
-  assert(callback, "missing binding " .. signature(modifiers, key))
-  callback()
+  if table.concat(modifiers, "+") == "cmd+ctrl" then return windowManagement.run(key) end
+  return utilityCommand.run(key)
 end
 
 local function complete(id, exitCode, stdout, stderr)
@@ -267,23 +231,8 @@ local function assertFailureAlert(priorAlerts, message)
   assert(alert.message ~= successMessage, message .. " used success message")
 end
 
-local function assertNoBindings(message)
-  assertEqual(handleCount(), 0, message .. " handle count")
+local function assertNoActionResidue(message)
   assertEqual(activeTimerCount(), 0, message .. " timer count")
-  for _, key in ipairs({ "t", "c", "g", "r", "n", "f" }) do
-    local name = signature({ "cmd", "ctrl" }, key)
-    assert(bindingHandles[name] == nil, message .. " residual handle " .. name)
-    assert(bindings[name] == nil, message .. " residual callback " .. name)
-    local pressed = pcall(function() press({ "cmd", "ctrl" }, key) end)
-    assert(not pressed, message .. " deleted binding executed " .. name)
-  end
-  for _, key in ipairs({ "f", "c" }) do
-    local name = signature({ "cmd", "alt", "shift" }, key)
-    assert(bindingHandles[name] == nil, message .. " residual handle " .. name)
-    assert(bindings[name] == nil, message .. " residual callback " .. name)
-    local pressed = pcall(function() press({ "cmd", "alt", "shift" }, key) end)
-    assert(not pressed, message .. " deleted binding executed " .. name)
-  end
 end
 
 local function entryCount(tableValue)
@@ -336,9 +285,6 @@ local function assertWindowFailure(failureName, setFailure, failureValue)
   assertEqual(taskNewCalls, priorTasks, failureName .. " does not invoke hs.task.new")
   assertEqual(activeTimerCount(), 0, failureName .. " leaves no timer")
 end
-
-utilityCommand.start()
-assertEqual(handleCount(), 8, "initial registry contains all eight handles")
 
 -- Public layout mapping, exact requested geometry, direction cycles, maximize reset, and dynamic frames.
 assertLayout("t", 1, 0.5, "bl")
@@ -426,36 +372,18 @@ press({ "cmd", "ctrl" }, "t")
 local staleStopTimer = latestTimer
 local priorStopAlerts = #alerts
 local stopsBeforeStop = timerStops
-utilityCommand.stop()
+windowManagement.stop()
 utilityCommand.stop()
 assert(staleStopTimer.stopped, "stop cancels pending readback timer")
 assert(timerStops > stopsBeforeStop, "stop invokes timer cancellation")
-assertNoBindings("stop cleanup")
+assertNoActionResidue("stop cleanup")
 staleStopTimer.callback()
 assertEqual(#alerts, priorStopAlerts, "stale stop callback cannot alert")
 
--- start -> start replaces handles; stop is idempotent; bind failure rolls back without throwing.
-utilityCommand.start()
-local deletedBeforeRestart = #deletedHandles
-utilityCommand.start()
-assertEqual(handleCount(), 8, "restart leaves eight handles")
-assertEqual(#deletedHandles, deletedBeforeRestart + 8, "restart deletes prior eight handles")
+-- Registration lifecycle is owned by hotkeys_test.lua; this test covers only
+-- action behavior and task cleanup.
 utilityCommand.stop()
-assertNoBindings("first stop")
-local deletedAfterStop = #deletedHandles
-utilityCommand.stop()
-assertEqual(#deletedHandles, deletedAfterStop, "second stop is idempotent")
-bindFailureKey = "cmd+ctrl:g"
-local priorBindFailureAlerts = #alerts
-local startedOK, startResult = pcall(utilityCommand.start)
-if startedOK then
-  assert(startResult == false or #alerts > priorBindFailureAlerts, "start failure has approved return or notification")
-  if #alerts > priorBindFailureAlerts then assertFailureAlert(priorBindFailureAlerts, "start failure notification") end
-end
-assertNoBindings("mid-bind rollback")
-bindFailureKey = nil
-utilityCommand.start()
-assertEqual(handleCount(), 8, "start remains reload-safe after rollback")
+assertNoActionResidue("action cleanup")
 
 -- Finder and Title Case task callbacks retain completion/failure handling and do not leak output.
 local function assertTaskCompletion(key, pathSuffix, expectedArguments, exitCode)

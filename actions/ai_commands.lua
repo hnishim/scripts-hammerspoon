@@ -1,7 +1,6 @@
 local M = {}
-local hud = require("hud")
+local hud = require("components.hud")
 
-local modifiers = { "cmd", "alt", "shift" }
 local keychainService = "my.gemini-api.hammerspoon"
 local keychainTimeout = 10
 local httpTimeout = 65
@@ -15,6 +14,7 @@ local commands = {
 
 local activeTask
 local resultWindow
+local invoke
 
 local function trim(value)
   return (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -101,6 +101,20 @@ local function clearResultWindow(deleteWindow)
   else
     resultWindow = nil
   end
+end
+
+function M.stop()
+  operationSequence = operationSequence + 1
+  local state = activeTask
+  activeTask = nil
+  if state then
+    state.done = true
+    stopTimer(state.watchdog)
+    state.watchdog = nil
+    if state.keyTask and state.keyTask.terminate then pcall(state.keyTask.terminate, state.keyTask) end
+    state.keyTask = nil
+  end
+  pcall(hud.close)
 end
 
 local function showResult(response)
@@ -331,7 +345,7 @@ local function runPrompt(command)
   M.run(command, input, "display", nil)
 end
 
-function M.run(command, input, requestedOutput, target)
+local function runCommand(command, input, requestedOutput, target)
   if activeTask then showMessage("別のAIコマンドを実行中です。"); return end
   if type(command) ~= "table" or type(input) ~= "string" then showSafeError(); return end
   local promptOK, template = readFile(command.prompt)
@@ -345,7 +359,16 @@ function M.run(command, input, requestedOutput, target)
   startKeychain(state, command, prompt, target)
 end
 
-local function invoke(command, key)
+function M.run(keyOrCommand, input, requestedOutput, target)
+  if type(keyOrCommand) == "table" then
+    return runCommand(keyOrCommand, input, requestedOutput, target)
+  end
+  local command = commands[keyOrCommand]
+  if not command then showSafeError(); return false end
+  return invoke(command, keyOrCommand)
+end
+
+invoke = function(command, key)
   if activeTask then showMessage("別のAIコマンドを実行中です。"); return end
   local target
   if key == "R" or key == "T" then
@@ -359,13 +382,6 @@ local function invoke(command, key)
   M.run(command, selection, "display", target)
 end
 
-function M.start()
-  if activeTask then
-    release(activeTask)
-  else
-    hud.close()
-  end
-  for key, command in pairs(commands) do hs.hotkey.bind(modifiers, key, function() invoke(command, key) end) end
-end
+M.keys = { "B", "R", "T" }
 
 return M

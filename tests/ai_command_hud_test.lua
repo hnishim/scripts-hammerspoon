@@ -79,7 +79,7 @@ _G.hs = {
 }
 
 package.path = "./?.lua;" .. package.path
-package.preload["hud"] = function()
+package.preload["components.hud"] = function()
   return {
     show = function(message)
       hudEvents[#hudEvents + 1] = "show:" .. message
@@ -90,7 +90,7 @@ package.preload["hud"] = function()
   }
 end
 
-local ai = require("ai_command")
+local ai = require("actions.ai_commands")
 local command = { prompt = "./tests/fixtures/ai_prompt.md", model = "test-model" }
 
 local function eventIndex(value)

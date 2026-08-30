@@ -35,6 +35,14 @@ search_without_tests_and_git() {
   fi
 }
 
+production_lua_files() {
+  if command -v rg >/dev/null 2>&1; then
+    rg --files --hidden --glob '*.lua' --glob '!**/tests/**' --glob '!**/.git/**' "$repo_root"
+  else
+    find "$repo_root" -type f -name '*.lua' -not -path '*/tests/*' -not -path '*/.git/*'
+  fi
+}
+
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 dev_root=$(cd "$repo_root/../.." && pwd)
@@ -87,35 +95,54 @@ else
   fail "JSON keeps CapsLock-to-hyper modifier conversion"
 fi
 
-if LC_ALL=C grep -Eq 'require\("app_launcher"\)\.start\(\)|require\('\''app_launcher'\''\)\.start\(\)' "$main_path"; then
-  pass "main.lua starts app_launcher"
+if LC_ALL=C grep -Eq 'require\("hotkeys"\)\.start\(\)|require\('\''hotkeys'\''\)\.start\(\)' "$main_path"; then
+  pass "main.lua starts through hotkeys"
 else
-  fail "main.lua starts app_launcher"
+  fail "main.lua starts through hotkeys"
 fi
 
-legacy_hits=$(mktemp "${TMPDIR:-/tmp}/launch-config-legacy.XXXXXX") || exit 1
-trap 'rm -f "$legacy_hits"' EXIT
-: >"$legacy_hits"
-for legacy in "raycast-x://extensions/raycast/script-commands/launch-apps" "launch-apps.sh"; do
-  matches=$(search_without_tests_and_git "$legacy" "$dev_root/dotfiles" "$dev_root/scripts" || true)
-  if [ -n "$matches" ]; then
-    fail "legacy reference is absent across dotfiles/scripts: $legacy"
-    printf '%s\n' "$matches" >>"$legacy_hits"
+main_require_count=$(LC_ALL=C grep -Ec '^[[:space:]]*require' "$main_path" || true)
+if [ "$main_require_count" -eq 1 ]; then
+  pass "main.lua has one startup require"
+else
+  fail "main.lua has one startup require"
+fi
+
+hotkeys_path="$repo_root/hotkeys.lua"
+if [ -f "$hotkeys_path" ] && LC_ALL=C grep -Eq 'hs\.hotkey\.bind' "$hotkeys_path"; then
+  pass "hotkeys.lua owns hotkey registration"
+else
+  fail "hotkeys.lua owns hotkey registration"
+fi
+
+bind_hits=$(mktemp "${TMPDIR:-/tmp}/launch-config-bind.XXXXXX") || exit 1
+trap 'rm -f "$bind_hits"' EXIT
+: >"$bind_hits"
+while IFS= read -r lua_path; do
+  if LC_ALL=C grep -Eq 'hs\.hotkey\.bind' "$lua_path"; then
+    printf '%s\n' "$lua_path" >>"$bind_hits"
+  fi
+done < <(production_lua_files)
+bind_file_count=$(wc -l <"$bind_hits" | tr -d ' ')
+if [ "$bind_file_count" -eq 1 ] && [ "$(head -n 1 "$bind_hits")" = "$hotkeys_path" ]; then
+  pass "production hs.hotkey.bind references are owned by hotkeys.lua"
+else
+  fail "production hs.hotkey.bind references are owned by hotkeys.lua"
+  LC_ALL=C sort -u "$bind_hits" >&2
+fi
+
+for legacy in ai_command.lua app_launcher.lua utility_command.lua hud.lua; do
+  if [ -e "$repo_root/$legacy" ]; then
+    fail "legacy production file is absent: $legacy"
   else
-    pass "legacy reference is absent across dotfiles/scripts: $legacy"
+    pass "legacy production file is absent: $legacy"
   fi
 done
 
-if [ -s "$legacy_hits" ]; then
-  LC_ALL=C sort -u "$legacy_hits" >&2
-fi
-
-pass "direct Hammerspoon hotkey mapping is covered by app_launcher_test.lua"
-
-if lua "$repo_root/tests/app_launcher_test.lua"; then
-  pass "app_launcher direct hotkey behavior test"
+if lua "$repo_root/tests/hotkeys_test.lua"; then
+  pass "central hotkey registration and delegation test"
 else
-  fail "app_launcher direct hotkey behavior test"
+  fail "central hotkey registration and delegation test"
 fi
 
 exit "$status"

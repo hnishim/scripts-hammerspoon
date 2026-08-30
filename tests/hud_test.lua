@@ -24,7 +24,7 @@ _G.hs = {
 }
 
 package.path = "./?.lua;" .. package.path
-local hud = require("hud")
+local hud = require("components.hud")
 
 local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
