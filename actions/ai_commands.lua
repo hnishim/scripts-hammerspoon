@@ -5,16 +5,9 @@ local keychainService = "my.gemini-api.hammerspoon"
 local keychainTimeout = 10
 local httpTimeout = 65
 local operationSequence = 0
-local promptDir = os.getenv("HOME") .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/prompts/ai-commands/"
-local commands = {
-  B = { prompt = promptDir .. "bio-ai_expert.md", model = "gemini-flash-lite-latest" },
-  R = { prompt = promptDir .. "review-text_compact.md", model = "gemini-flash-lite-latest" },
-  T = { prompt = promptDir .. "translate.md", model = "gemini-flash-lite-latest" },
-}
-
 local activeTask
 local resultWindow
-local invoke
+local runCommand
 
 local function trim(value)
   return (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -337,51 +330,51 @@ local function startKeychain(state, command, prompt, target)
   armWatchdog()
 end
 
-local function runPrompt(command)
+local function runPrompt(promptPath, model)
   local button, input = hs.dialog.textPrompt("Gemini AI command", "Geminiへ渡すテキストを入力してください。", "", "実行", "キャンセル")
   if button ~= "実行" then return end
   input = trim(input)
   if input == "" then showMessage("入力テキストが空です。"); return end
-  M.run(command, input, "display", nil)
+  runCommand(promptPath, model, "display", input, nil)
 end
 
-local function runCommand(command, input, requestedOutput, target)
+runCommand = function(promptPath, model, mode, input, target)
   if activeTask then showMessage("別のAIコマンドを実行中です。"); return end
-  if type(command) ~= "table" or type(input) ~= "string" then showSafeError(); return end
-  local promptOK, template = readFile(command.prompt)
+  if type(promptPath) ~= "string" or promptPath == "" or type(model) ~= "string" or model == ""
+      or (mode ~= "display" and mode ~= "replace") or type(input) ~= "string" then
+    showSafeError(); return false
+  end
+  local promptOK, template = readFile(promptPath)
   if not promptOK then showSafeError(); return end
   local renderedOK, prompt = replacePromptPlaceholders(template, input)
   if not renderedOK then showSafeError(); return end
+  prompt = prompt:gsub("%s+$", "")
   operationSequence = operationSequence + 1
   local state = { token = operationSequence, done = false, keyTask = nil, watchdog = nil }
   activeTask = state
   hud.show("Gemini処理中...")
-  startKeychain(state, command, prompt, target)
+  startKeychain(state, { model = model }, prompt, target)
+  return true
 end
 
-function M.run(keyOrCommand, input, requestedOutput, target)
-  if type(keyOrCommand) == "table" then
-    return runCommand(keyOrCommand, input, requestedOutput, target)
+function M.run(promptPath, model, mode)
+  if type(promptPath) ~= "string" or promptPath == "" or type(model) ~= "string" or model == ""
+      or (mode ~= "display" and mode ~= "replace") then
+    showSafeError(); return false
   end
-  local command = commands[keyOrCommand]
-  if not command then showSafeError(); return false end
-  return invoke(command, keyOrCommand)
-end
-
-invoke = function(command, key)
-  if activeTask then showMessage("別のAIコマンドを実行中です。"); return end
   local target
-  if key == "R" or key == "T" then
+  if mode == "replace" then
     local ok
     ok, target = pcall(hs.application.frontmostApplication)
-    if not ok or not target then showSafeError(); return end
+    if not ok or not target then showSafeError(); return false end
   end
   local selection, acquired = acquireSelection()
-  if not acquired then return end
-  if selection == "" then runPrompt(command); return end
-  M.run(command, selection, "display", target)
+  if not acquired then return false end
+  if selection == "" then
+    runPrompt(promptPath, model)
+    return true
+  end
+  return runCommand(promptPath, model, mode, selection, target)
 end
-
-M.keys = { "B", "R", "T" }
 
 return M

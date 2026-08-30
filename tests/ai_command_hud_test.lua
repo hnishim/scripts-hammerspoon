@@ -5,6 +5,13 @@ local taskCallbacks = {}
 local taskID = 0
 local hudEvents = {}
 local resultShown = false
+local httpRequests = {}
+local clipboard = "prior clipboard"
+local clipboardCount = 1
+local pasteCalls = 0
+local frontmostTarget = {}
+local replaceFailure = nil
+local appLookupFailure = nil
 
 local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
@@ -57,12 +64,20 @@ _G.hs = {
   },
   http = {
     asyncPost = function(_, _, _, callback)
-      tasks.httpCallback = callback
+      error("stub replaced below")
     end,
   },
   json = {
-    encode = function() return "{}" end,
+    encode = function(payload)
+      local prompt = payload.contents[1].parts[1].text
+      return "PROMPT:" .. prompt
+    end,
     decode = function() return { candidates = { { content = { parts = { { text = "結果" } } } } } } end,
+  },
+  uielement = {
+    focusedElement = function()
+      return { selectedText = function() return "入力" end }
+    end,
   },
   drawing = { windowLevels = { floating = 1 } },
   screen = { mainScreen = function() return { frame = function() return { x = 0, y = 0, w = 1200, h = 800 } end } end },
@@ -76,7 +91,41 @@ _G.hs = {
     view.delete = function() end
     return view
   end },
+  pasteboard = {
+    getContents = function() return clipboard end,
+    changeCount = function() return clipboardCount end,
+    setContents = function(value) clipboard = value; clipboardCount = clipboardCount + 1; return true end,
+    clearContents = function() clipboard = nil; clipboardCount = clipboardCount + 1; return true end,
+  },
+  eventtap = {
+    keyStroke = function(modifiers, key)
+      assertEqual(table.concat(modifiers, "+"), "cmd", "replace uses Command-V")
+      assertEqual(key, "v", "replace uses Command-V")
+      if replaceFailure == "keyStroke" then error("injected Command-V failure") end
+      pasteCalls = pasteCalls + 1
+      return true
+    end,
+  },
+  application = {
+    frontmostApplication = function()
+      if appLookupFailure then error("injected frontmost application failure") end
+      return frontmostTarget
+    end,
+  },
 }
+
+_G.hs.http.asyncPost = function(url, body, headers, callback)
+  httpRequests[#httpRequests + 1] = { url = url, body = body, headers = headers }
+  tasks.httpCallback = callback
+end
+frontmostTarget.isFrontmost = function()
+  if replaceFailure == "isFrontmost" then error("injected isFrontmost failure") end
+  return true
+end
+frontmostTarget.activate = function()
+  if replaceFailure == "activate" then error("injected activate failure") end
+  return true
+end
 
 package.path = "./?.lua;" .. package.path
 package.preload["components.hud"] = function()
@@ -91,7 +140,11 @@ package.preload["components.hud"] = function()
 end
 
 local ai = require("actions.ai_commands")
-local command = { prompt = "./tests/fixtures/ai_prompt.md", model = "test-model" }
+local promptPath = "./tests/fixtures/ai_prompt.md"
+local missingPromptPath = "./tests/fixtures/missing-ai-prompt.md"
+local model = "test-model"
+
+local function requestCount() return #httpRequests end
 
 local function eventIndex(value)
   for index, event in ipairs(hudEvents) do
@@ -108,9 +161,9 @@ local function eventCount(value)
   return count
 end
 
-local function startCommand(failureStage)
+local function startCommand(failureStage, requestedOutput)
   local firstTaskID = taskID + 1
-  ai.run(command, "入力", "display", nil)
+  ai.run(promptPath, model, requestedOutput or "display")
   assertEqual(taskID, firstTaskID, "AI start creates account task")
   if failureStage == "account" then return firstTaskID end
   completeTask(firstTaskID, 0, "test-account\n")
@@ -120,15 +173,30 @@ local function startCommand(failureStage)
   assert(tasks.httpCallback, "keychain success starts API request")
 end
 
+local function assertMissingPromptDoesNotStart()
+  local beforeTaskID = taskID
+  ai.run(missingPromptPath, model, "display")
+  assertEqual(taskID, beforeTaskID, "missing prompt does not start a task")
+end
+
 local function assertWaitingHUD(eventIndexValue, message)
   local event = hudEvents[eventIndexValue]
   assert(type(event) == "string" and event:match("^show:.+"), message)
 end
 
+assertMissingPromptDoesNotStart()
 startCommand()
 assertWaitingHUD(1, "AI start shows a waiting HUD with a message")
+assertEqual(requestCount(), 1, "AI starts one HTTP request")
+assertEqual(httpRequests[1].url,
+  "https://generativelanguage.googleapis.com/v1beta/models/" .. model .. ":generateContent",
+  "AI request URL uses the supplied model")
+assertEqual(httpRequests[1].body, "PROMPT:AI prompt: 入力", "AI request body uses the supplied prompt contents")
+assertEqual(httpRequests[1].headers["Content-Type"], "application/json", "AI request content type")
+assertEqual(httpRequests[1].headers["x-goog-api-key"], "test-api-key", "AI request API key header")
 tasks.httpCallback(200, "{}", "")
 assertEqual(eventIndex("close") < eventIndex("result"), true, "success closes HUD before result display")
+assertEqual(pasteCalls, 0, "display mode does not paste")
 assertEqual(liveTimers(), 0, "success leaves no timers")
 
 local eventsBeforeFailure = #hudEvents
@@ -176,5 +244,82 @@ assertEqual(liveTimers(), 1, "retry owns one active API timer")
 tasks.httpCallback(200, "{}", "")
 assertEqual(liveTimers(), 0, "successful retry leaves no timers")
 assertEqual(#alerts, alertsBeforeTimeoutRetry, "successful retry needs no error notification")
+
+local priorClipboard = clipboard
+local priorPasteCalls = pasteCalls
+startCommand(nil, "replace")
+tasks.httpCallback(200, "{}", "")
+assertEqual(pasteCalls, priorPasteCalls + 1, "replace mode pastes the response into the target")
+assertEqual(clipboard, "結果", "replace mode places the response on the clipboard before paste")
+fireLatestTimer()
+assertEqual(clipboard, priorClipboard, "replace mode restores the prior clipboard")
+assertEqual(liveTimers(), 0, "replace mode leaves no timers after restore")
+
+local function resetReplaceState()
+  replaceFailure = nil
+  appLookupFailure = nil
+  clipboard = "prior clipboard"
+  clipboardCount = 1
+  pasteCalls = 0
+  tasks.httpCallback = nil
+end
+
+local function runReplaceFailure(label, failure)
+  resetReplaceState()
+  replaceFailure = failure
+  if failure == "frontmost" then appLookupFailure = true end
+  local priorAlerts, priorCloses = #alerts, eventCount("close")
+  local priorTasks = taskID
+  ai.run(promptPath, model, "replace")
+  local started = taskID ~= priorTasks
+  if started then
+    completeTask(taskID, 0, "test-account\n")
+    completeTask(taskID, 0, "test-api-key\n")
+    assert(tasks.httpCallback, label .. " starts its HTTP request")
+    tasks.httpCallback(200, "{}", "")
+  end
+  while liveTimers() > 0 do fireLatestTimer() end
+  assertEqual(#alerts, priorAlerts + 1, label .. " shows one replace failure notification")
+  assertEqual(liveTimers(), 0, label .. " leaves no timers")
+  assertEqual(eventCount("close"), priorCloses + (started and 1 or 0), label .. " cleans up the HUD")
+  assertEqual(clipboard, "prior clipboard", label .. " leaves the prior clipboard unchanged or restored")
+  assertEqual(pasteCalls, 0, label .. " does not complete a paste")
+  replaceFailure = nil
+  appLookupFailure = nil
+end
+
+runReplaceFailure("Command-V failure", "keyStroke")
+runReplaceFailure("activate failure", "activate")
+runReplaceFailure("isFrontmost failure", "isFrontmost")
+runReplaceFailure("frontmost application failure", "frontmost")
+
+local function assertInvalidInput(label, invalidPrompt, invalidModel, invalidMode)
+  local beforeTasks, beforeRequests = taskID, requestCount()
+  ai.run(invalidPrompt, invalidModel, invalidMode)
+  assertEqual(taskID, beforeTasks, label .. " does not start a task")
+  assertEqual(requestCount(), beforeRequests, label .. " does not start HTTP")
+end
+
+for _, testCase in ipairs({
+  { label = "nil model", model = nil },
+  { label = "empty model", model = "" },
+  { label = "non-string model", model = 42 },
+}) do
+  assertInvalidInput(testCase.label, promptPath, testCase.model, "display")
+end
+for _, testCase in ipairs({
+  { label = "nil mode", mode = nil },
+  { label = "invalid mode", mode = "invalid" },
+  { label = "non-string mode", mode = 42 },
+}) do
+  assertInvalidInput(testCase.label, promptPath, model, testCase.mode)
+end
+for _, testCase in ipairs({
+  { label = "nil prompt", prompt = nil },
+  { label = "empty prompt", prompt = "" },
+  { label = "non-string prompt", prompt = 42 },
+}) do
+  assertInvalidInput(testCase.label, testCase.prompt, model, "display")
+end
 
 print("ai_command_hud_test: ok")

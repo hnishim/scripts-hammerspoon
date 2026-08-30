@@ -1,12 +1,18 @@
 local M = {}
 
-local home = os.getenv("HOME") or ""
-local raycastRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/raycast"
 local runningTasks = {}
 local taskSequence = 0
 
 local function showError()
   if hs.alert and hs.alert.show then pcall(hs.alert.show, "コマンドを実行できませんでした。", 2) end
+end
+
+local function readableFile(path)
+  if type(path) ~= "string" or path == "" then return false end
+  local handle = io.open(path, "r")
+  if not handle then return false end
+  handle:close()
+  return true
 end
 
 local function releaseTask(record)
@@ -22,7 +28,8 @@ local function clearTasks()
   end
 end
 
-local function runTask(path, arguments)
+local function runTask(executablePath, scriptPath)
+  if not readableFile(executablePath) or not readableFile(scriptPath) then return false end
   taskSequence = taskSequence + 1
   local record = { id = taskSequence, task = nil, finished = false }
   local function callback(exitCode, _stdout, _stderr)
@@ -30,7 +37,7 @@ local function runTask(path, arguments)
     releaseTask(record)
     if exitCode ~= 0 then showError() end
   end
-  local createdOK, task = pcall(hs.task.new, path, callback, arguments)
+  local createdOK, task = pcall(hs.task.new, executablePath, callback, { scriptPath })
   if not createdOK or not task then showError(); return false end
   record.task = task
   runningTasks[record.id] = record
@@ -48,10 +55,8 @@ function M.stop()
   clearTasks()
 end
 
-function M.run(key)
-  if key == "f" then return runTask("/usr/bin/osascript", { raycastRoot .. "/two-panes-finder.applescript" }) end
-  if key == "c" then return runTask("/bin/bash", { raycastRoot .. "/title-case-chicago.sh" }) end
-  return false
+function M.run(executablePath, scriptPath)
+  return runTask(executablePath, scriptPath)
 end
 
 return M

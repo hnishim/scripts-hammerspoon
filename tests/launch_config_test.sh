@@ -131,6 +131,74 @@ else
   LC_ALL=C sort -u "$bind_hits" >&2
 fi
 
+assert_source_absent() {
+  local source_path="$1"
+  local pattern="$2"
+  local description="$3"
+  if LC_ALL=C grep -Eq "$pattern" "$source_path"; then
+    fail "$description"
+  else
+    pass "$description"
+  fi
+}
+
+assert_source_literal_absent() {
+  local source_path="$1"
+  local literal="$2"
+  local description="$3"
+  if LC_ALL=C grep -Fq -- "$literal" "$source_path"; then
+    fail "$description"
+  else
+    pass "$description"
+  fi
+}
+
+ai_actions_path="$repo_root/actions/ai_commands.lua"
+app_actions_path="$repo_root/actions/app_launcher.lua"
+utility_actions_path="$repo_root/actions/utility_command.lua"
+window_actions_path="$repo_root/actions/window_management.lua"
+
+for legacy_check in \
+  '^[[:space:]]*local[[:space:]]+commands[[:space:]]*=' \
+  'keyOrCommand' \
+  'commands\[' \
+  'M\.keys' \
+  'key[[:space:]]*==[[:space:]]*"R"' \
+  'gemini-flash-lite-latest' \
+  'bio-ai_expert\.md'; do
+  assert_source_absent "$ai_actions_path" "$legacy_check" "AI action has no physical-key or target definition: $legacy_check"
+done
+
+for legacy_check in \
+  '^M\.(modifiers|keys|keyToApp|allowedApps)[[:space:]]*=' \
+  'function[[:space:]]+M\.launch[[:space:]]*\(' \
+  '^[[:space:]]*local[[:space:]]+(modifiers|keys|keyToApp|allowedApps)[[:space:]]*='; do
+  assert_source_absent "$app_actions_path" "$legacy_check" "App action has no registration definition: $legacy_check"
+done
+while IFS=$(printf '\t') read -r app_key app_name encoded_name; do
+  [ -n "$app_name" ] || continue
+  assert_source_literal_absent "$app_actions_path" "$app_name" "App action has no app target: $app_name"
+done < <(tail -n +2 "$repo_root/tests/fixtures/launch_apps.tsv")
+
+for legacy_check in \
+  'raycastRoot' \
+  'function[[:space:]]+M\.run[[:space:]]*\([[:space:]]*key([[:space:],)]|$)' \
+  'key[[:space:]]*==[[:space:]]*"f"' \
+  'key[[:space:]]*==[[:space:]]*"c"' \
+  '/usr/bin/osascript' \
+  '/bin/bash'; do
+  assert_source_absent "$utility_actions_path" "$legacy_check" "Utility action has no physical-key or target definition: $legacy_check"
+done
+
+for legacy_check in \
+  '^[[:space:]]*local[[:space:]]+layoutCommands[[:space:]]*=' \
+  'function[[:space:]]+M\.run[[:space:]]*\([[:space:]]*key([[:space:],)]|$)' \
+  'key[[:space:]]*==[[:space:]]*"f"' \
+  'layoutCommands\[key\]' \
+  '^[[:space:]]*[tcgrn][[:space:]]*=[[:space:]]*{[[:space:]]*direction'; do
+  assert_source_absent "$window_actions_path" "$legacy_check" "Window action has no physical-key definition: $legacy_check"
+done
+
 for legacy in ai_command.lua app_launcher.lua utility_command.lua hud.lua; do
   if [ -e "$repo_root/$legacy" ]; then
     fail "legacy production file is absent: $legacy"

@@ -23,6 +23,10 @@ local readbackMode = nil
 local setFrames = {}
 local successMessage = "ウィンドウのサイズ変更に成功しました。"
 local raycastRoot = (os.getenv("HOME") or "") .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/raycast"
+local finderExecutable = "/usr/bin/osascript"
+local finderScript = raycastRoot .. "/two-panes-finder.applescript"
+local titleCaseExecutable = "/bin/bash"
+local titleCaseScript = raycastRoot .. "/title-case-chicago.sh"
 
 local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
@@ -175,8 +179,13 @@ local utilityCommand = require("actions.utility_command")
 local windowManagement = require("actions.window_management")
 
 local function press(modifiers, key)
-  if table.concat(modifiers, "+") == "cmd+ctrl" then return windowManagement.run(key) end
-  return utilityCommand.run(key)
+  if table.concat(modifiers, "+") == "cmd+ctrl" then
+    local names = { t = "bottom", c = "center", g = "left", f = "full", r = "right", n = "top" }
+    return windowManagement.run(names[key] or key)
+  end
+  local commands = { f = { finderExecutable, finderScript }, c = { titleCaseExecutable, titleCaseScript } }
+  local command = commands[key]
+  return utilityCommand.run(command and command[1], command and command[2])
 end
 
 local function complete(id, exitCode, stdout, stderr)
@@ -186,10 +195,10 @@ local function complete(id, exitCode, stdout, stderr)
   taskCallbacks[id] = nil
 end
 
-local function assertTask(id, pathSuffix, expectedArguments)
+local function assertTask(id, executablePath, expectedArguments)
   local call = taskCalls[id]
   assert(call, "missing task call " .. tostring(id))
-  assert(call.path:sub(-#pathSuffix) == pathSuffix, "unexpected task path: " .. call.path)
+  assertEqual(call.path, executablePath, "unexpected task executable path")
   assertTable(call.arguments, expectedArguments, "task arguments")
 end
 
@@ -380,41 +389,86 @@ assertNoActionResidue("stop cleanup")
 staleStopTimer.callback()
 assertEqual(#alerts, priorStopAlerts, "stale stop callback cannot alert")
 
+-- Named actions are checked after geometry/cycle assertions so the probes do not
+-- alter the state used by the physical-key-equivalent checks above.
+assertNoAlert(function() assertEqual(windowManagement.run("bottom") ~= false, true, "bottom action name is accepted") end,
+  "bottom action name")
+assertNoAlert(function() assertEqual(windowManagement.run("center") ~= false, true, "center action name is accepted") end,
+  "center action name")
+assertNoAlert(function() assertEqual(windowManagement.run("left") ~= false, true, "left action name is accepted") end,
+  "left action name")
+assertNoAlert(function() assertEqual(windowManagement.run("full") ~= false, true, "full action name is accepted") end,
+  "full action name")
+assertNoAlert(function() assertEqual(windowManagement.run("right") ~= false, true, "right action name is accepted") end,
+  "right action name")
+assertNoAlert(function() assertEqual(windowManagement.run("top") ~= false, true, "top action name is accepted") end,
+  "top action name")
+assertEqual(windowManagement.run("invalid"), false, "invalid window action is rejected")
+windowManagement.stop()
+
 -- Registration lifecycle is owned by hotkeys_test.lua; this test covers only
 -- action behavior and task cleanup.
 utilityCommand.stop()
 assertNoActionResidue("action cleanup")
 
 -- Finder and Title Case task callbacks retain completion/failure handling and do not leak output.
-local function assertTaskCompletion(key, pathSuffix, expectedArguments, exitCode)
+local function assertTaskCompletion(label, executablePath, scriptPath, exitCode)
   local id = taskSequence + 1
   local priorAlerts = #alerts
-  press({ "cmd", "alt", "shift" }, key)
-  assertTask(id, pathSuffix, expectedArguments)
+  utilityCommand.run(executablePath, scriptPath)
+  assertTask(id, executablePath, { scriptPath })
   collectgarbage("collect")
-  assert(taskReferences[id] ~= nil, key .. " running task must be retained")
+  assert(taskReferences[id] ~= nil, label .. " running task must be retained")
   complete(id, exitCode, "SECRET stdout", "SECRET stderr")
-  assert(taskCallbacks[id] == nil, key .. " callback released after completion")
+  assert(taskCallbacks[id] == nil, label .. " callback released after completion")
   collectgarbage("collect")
-  assert(taskReferences[id] == nil, key .. " task released after completion")
+  assert(taskReferences[id] == nil, label .. " task released after completion")
   if exitCode == 0 then
-    assertEqual(#alerts, priorAlerts, key .. " success has no notification")
+    assertEqual(#alerts, priorAlerts, label .. " success has no notification")
   else
-    assertFailureAlert(priorAlerts, key .. " failure notification")
-    assert(not alerts[#alerts].message:find("SECRET", 1, true), key .. " completion leaked task output")
+    assertFailureAlert(priorAlerts, label .. " failure notification")
+    assert(not alerts[#alerts].message:find("SECRET", 1, true), label .. " completion leaked task output")
   end
 end
 
-assertTaskCompletion("f", "/usr/bin/osascript", { raycastRoot .. "/two-panes-finder.applescript" }, 0)
-assertTaskCompletion("f", "/usr/bin/osascript", { raycastRoot .. "/two-panes-finder.applescript" }, 7)
-assertTaskCompletion("c", "/bin/bash", { raycastRoot .. "/title-case-chicago.sh" }, 0)
-assertTaskCompletion("c", "/bin/bash", { raycastRoot .. "/title-case-chicago.sh" }, 7)
+assertTaskCompletion("finder success", finderExecutable, finderScript, 0)
+assertTaskCompletion("finder failure", finderExecutable, finderScript, 7)
+assertTaskCompletion("title case success", titleCaseExecutable, titleCaseScript, 0)
+assertTaskCompletion("title case failure", titleCaseExecutable, titleCaseScript, 7)
+
+local beforeMissingScript = taskSequence
+utilityCommand.run(titleCaseExecutable, raycastRoot .. "/missing-title-case-chicago.sh")
+assertEqual(taskSequence, beforeMissingScript, "missing script does not create a task")
+
+local beforeMissingExecutable = taskSequence
+utilityCommand.run("/missing/raycast-executable", titleCaseScript)
+assertEqual(taskSequence, beforeMissingExecutable, "missing executable does not create a task")
+
+local function assertInvalidCommand(label, executablePath, scriptPath)
+  local beforeTasks = taskNewCalls
+  utilityCommand.run(executablePath, scriptPath)
+  assertEqual(taskNewCalls, beforeTasks, label .. " does not create a task")
+end
+for _, testCase in ipairs({
+  { label = "nil executable", value = nil },
+  { label = "empty executable", value = "" },
+  { label = "non-string executable", value = 42 },
+}) do
+  assertInvalidCommand(testCase.label, testCase.value, titleCaseScript)
+end
+for _, testCase in ipairs({
+  { label = "nil script", value = nil },
+  { label = "empty script", value = "" },
+  { label = "non-string script", value = 42 },
+}) do
+  assertInvalidCommand(testCase.label, titleCaseExecutable, testCase.value)
+end
 
 local function assertTaskSetupFailure(newMode, startMode, label)
   taskMode.new, taskMode.start = newMode, startMode
   local priorAlerts, priorTasks = #alerts, taskSequence
   local priorCallbacks, priorReferences = entryCount(taskCallbacks), entryCount(taskReferences)
-  press({ "cmd", "alt", "shift" }, "c")
+  utilityCommand.run(titleCaseExecutable, titleCaseScript)
   assertFailureAlert(priorAlerts, label .. " notification")
   assert(not alerts[#alerts].message:find("SECRET", 1, true), label .. " leaked task output")
   assertEqual(taskSequence, priorTasks + (newMode == nil and 1 or 0), label .. " task sequence")

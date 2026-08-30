@@ -44,21 +44,7 @@ local function loadFixtureApps()
   return rows
 end
 
-local function sortedCopy(values)
-  local copy = {}
-  for index, value in ipairs(values) do copy[index] = value end
-  table.sort(copy)
-  return copy
-end
-
-local function exportedAllowlist(module)
-  assert(type(module.allowedApps) == "table", "app_launcher must expose allowedApps")
-  return sortedCopy(module.allowedApps)
-end
-
 local fixtureApps = loadFixtureApps()
-local expectedApps = {}
-for _, row in ipairs(fixtureApps) do expectedApps[#expectedApps + 1] = row.decodedApp end
 
 local function resetObservedState()
   for key in pairs(launchCalls) do launchCalls[key] = nil end
@@ -107,17 +93,16 @@ end
 local loaded, appLauncher = pcall(require, "actions.app_launcher")
 assert(loaded, "expected app_launcher.lua to be require-able")
 assert(type(appLauncher) == "table", "app_launcher must return a module table")
-assert(type(appLauncher.launch) == "function", "app_launcher.launch() must be exported")
-assertTableEqual(exportedAllowlist(appLauncher), sortedCopy(expectedApps), "explicit allowlist must match fixture apps")
-
-for _, row in ipairs(fixtureApps) do
-  assertEqual(appLauncher.keyToApp[row.key], row.decodedApp, "key/app mapping for " .. row.key)
+assert(type(appLauncher.run) == "function", "app_launcher.run() must be exported")
+assertEqual(appLauncher.launch, nil, "app_launcher.launch() must no longer be exported")
+for _, name in ipairs({ "keys", "keyToApp", "allowedApps", "modifiers" }) do
+  assertEqual(appLauncher[name], nil, "app_launcher must not expose " .. name)
 end
 
 for _, row in ipairs(fixtureApps) do
   local app = row.decodedApp
   resetObservedState()
-  appLauncher.launch(app)
+  appLauncher.run(app)
   assertTableEqual(launchCalls, { app }, "launch calls for " .. app)
   assertTableEqual(hudEvents, {
     "show:Launching " .. app .. "...",
@@ -129,7 +114,7 @@ end
 
 resetObservedState()
 launchResults["Arc"] = false
-appLauncher.launch("Arc")
+appLauncher.run("Arc")
 assertTableEqual(launchCalls, { "Arc" }, "failed launch still attempts launchOrFocus once")
 assertTableEqual(hudEvents, {
   "show:Launching Arc...",
@@ -140,21 +125,32 @@ assertEqual(#alertCalls, 1, "failed launch should show one alert")
 assertEqual(alertCalls[1].message, "コマンドを実行できませんでした。", "failed launch alert format")
 assertEqual(alertCalls[1].seconds, 2, "failed launch alert duration")
 
-local rejectedApps = {
-  { name = "allowlist外アプリ", app = "Unapproved App" },
+local invalidApps = {
   { name = "空文字列", app = "" },
   { name = "nil", app = nil },
+  { name = "数値", app = 42 },
 }
-for _, testCase in ipairs(rejectedApps) do
+for _, testCase in ipairs(invalidApps) do
   resetObservedState()
-  appLauncher.launch(testCase.app)
-  assertEqual(#launchCalls, 0, "rejected " .. testCase.name .. " must not call launchOrFocus")
-  assertEqual(#hudEvents, 0, "rejected " .. testCase.name .. " must not change HUD")
-  assertEqual(#alertCalls, 0, "rejected " .. testCase.name .. " must not show an alert")
+  appLauncher.run(testCase.app)
+  assertEqual(#launchCalls, 0, "invalid " .. testCase.name .. " must not call launchOrFocus")
+  assertEqual(#hudEvents, 0, "invalid " .. testCase.name .. " must not change HUD")
+  assertEqual(#alertCalls, 0, "invalid " .. testCase.name .. " must not show an alert")
 end
 
 resetObservedState()
-appLauncher.launch("Slack")
+launchResults["Missing App"] = false
+appLauncher.run("Missing App")
+assertTableEqual(launchCalls, { "Missing App" }, "missing app failure is passed to launchOrFocus")
+assertTableEqual(hudEvents, {
+  "show:Launching Missing App...",
+  "launch:Missing App",
+  "close",
+}, "missing app failure still cleans up HUD")
+assertEqual(#alertCalls, 1, "missing app failure shows one error notification")
+
+resetObservedState()
+appLauncher.run("Slack")
 assertTableEqual(launchCalls, { "Slack" }, "action remains usable after a prior launch")
 
 print("app_launcher_test: ok")

@@ -29,15 +29,12 @@ local function signature(modifiers, key)
   return table.concat(normalized, "+") .. ":" .. key
 end
 
-local function recordAction(name, value)
-  actionCalls[#actionCalls + 1] = name .. ":" .. tostring(value)
+local function recordAction(name, ...)
+  actionCalls[#actionCalls + 1] = { name = name, args = { ... } }
 end
 
 local function actionStub(name)
-  if name == "app" then
-    return { launch = function(value) recordAction(name, value) end }
-  end
-  return { run = function(value) recordAction(name, value) end }
+  return { run = function(...) recordAction(name, ...) end }
 end
 
 _G.hs = {
@@ -73,25 +70,34 @@ package.preload["actions.window_management"] = function() return actionStub("win
 package.preload["actions.utility_command"] = function() return actionStub("utility") end
 package.preload["components.hud"] = function() return {} end
 
+local home = os.getenv("HOME") or ""
+local promptDir = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/prompts/ai-commands/"
 local expected = {
-  { { "cmd", "alt", "shift" }, "B", "ai:B" },
-  { { "cmd", "alt", "shift" }, "R", "ai:R" },
-  { { "cmd", "alt", "shift" }, "T", "ai:T" },
+  { { "cmd", "alt", "shift" }, "B", "ai", { promptDir .. "bio-ai_expert.md", "gemini-flash-lite-latest", "display" } },
+  { { "cmd", "alt", "shift" }, "R", "ai", { promptDir .. "review-text_compact.md", "gemini-flash-lite-latest", "replace" } },
+  { { "cmd", "alt", "shift" }, "T", "ai", { promptDir .. "translate.md", "gemini-flash-lite-latest", "replace" } },
 }
 local apps = {
-  a = "Microsoft Teams", b = "Arc", c = "Ferdium", d = "Cogito", e = "Cursor",
-  f = "Finder", i = "ChatGPT", j = "Dictionaries", k = "Linear", m = "Meru",
-  n = "Notion", p = "Microsoft PowerPoint", r = "Reminders", s = "Slack", t = "Warp",
-  w = "1Password", x = "Microsoft Excel", z = "zoom.us",
+  { "a", "Microsoft Teams" }, { "b", "Arc" }, { "c", "Ferdium" },
+  { "d", "Cogito" }, { "e", "Cursor" }, { "f", "Finder" },
+  { "i", "ChatGPT" }, { "j", "Dictionaries" }, { "k", "Linear" },
+  { "m", "Meru" }, { "n", "Notion" }, { "p", "Microsoft PowerPoint" },
+  { "r", "Reminders" }, { "s", "Slack" }, { "t", "Warp" },
+  { "w", "1Password" }, { "x", "Microsoft Excel" }, { "z", "zoom.us" },
 }
-for key, app in pairs(apps) do
-  expected[#expected + 1] = { { "cmd", "ctrl", "alt", "shift" }, key, "app:" .. app }
+for _, appBinding in ipairs(apps) do
+  local key, app = appBinding[1], appBinding[2]
+  expected[#expected + 1] = { { "cmd", "ctrl", "alt", "shift" }, key, "app", { app } }
 end
-for _, key in ipairs({ "t", "c", "g", "r", "n", "f" }) do
-  expected[#expected + 1] = { { "cmd", "ctrl" }, key, "window:" .. key }
+for index, key in ipairs({ "t", "c", "g", "r", "n", "f" }) do
+  expected[#expected + 1] = { { "cmd", "ctrl" }, key,
+    "window", { ({ "bottom", "center", "left", "right", "top", "full" })[index] } }
 end
-for _, key in ipairs({ "f", "c" }) do
-  expected[#expected + 1] = { { "cmd", "alt", "shift" }, key, "utility:" .. key }
+for _, binding in ipairs({
+  { "f", "/usr/bin/osascript", home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/raycast/two-panes-finder.applescript" },
+  { "c", "/bin/bash", home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/raycast/title-case-chicago.sh" },
+}) do
+  expected[#expected + 1] = { { "cmd", "alt", "shift" }, binding[1], "utility", { binding[2], binding[3] } }
 end
 
 local function expectedSignatures()
@@ -118,11 +124,12 @@ assertTableEqual(observedSignatures(1, 29), expectedSignatures(), "registered mo
 for _, binding in ipairs(expected) do
   handles[signature(binding[1], binding[2])].callback()
 end
-table.sort(actionCalls)
-local expectedActions = {}
-for _, binding in ipairs(expected) do expectedActions[#expectedActions + 1] = binding[3] end
-table.sort(expectedActions)
-assertTableEqual(actionCalls, expectedActions, "hotkey callbacks delegate to the matching action")
+assertEqual(#actionCalls, #expected, "all registered callbacks invoke an action")
+for index, binding in ipairs(expected) do
+  local observed = actionCalls[index]
+  assertEqual(observed.name, binding[3], "callback action module " .. index)
+  assertTableEqual(observed.args, binding[4], "callback arguments " .. index)
+end
 
 local firstHandles = {}
 for index = 1, 29 do firstHandles[index] = bindCalls[index] end

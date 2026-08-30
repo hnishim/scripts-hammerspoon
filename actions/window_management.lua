@@ -3,12 +3,12 @@ local M = {}
 local mimiState = { direction = nil, cycle = 0 }
 local pendingReadbackTimer
 local operationSequence = 0
-local layoutCommands = {
-  t = { direction = 1, layouts = {{ width = 1, height = 0.5, anchor = "bl" }, { width = 1, height = 1 / 3, anchor = "bl" }, { width = 1, height = 2 / 3, anchor = "bl" }} },
-  c = { direction = 2, layouts = {{ width = 0.5, height = 1, anchor = "cc" }, { width = 1 / 3, height = 1, anchor = "cc" }, { width = 2 / 3, height = 1, anchor = "cc" }} },
-  g = { direction = 3, layouts = {{ width = 0.5, height = 1, anchor = "tl" }, { width = 1 / 3, height = 1, anchor = "tl" }, { width = 2 / 3, height = 1, anchor = "tl" }} },
-  r = { direction = 4, layouts = {{ width = 0.5, height = 1, anchor = "tr" }, { width = 1 / 3, height = 1, anchor = "tr" }, { width = 2 / 3, height = 1, anchor = "tr" }} },
-  n = { direction = 5, layouts = {{ width = 1, height = 0.5, anchor = "tl" }, { width = 1, height = 1 / 3, anchor = "tl" }, { width = 1, height = 2 / 3, anchor = "tl" }} },
+local layoutDefinitions = {
+  bottom = { direction = 1, layouts = {{ width = 1, height = 0.5, anchor = "bl" }, { width = 1, height = 1 / 3, anchor = "bl" }, { width = 1, height = 2 / 3, anchor = "bl" }} },
+  center = { direction = 2, layouts = {{ width = 0.5, height = 1, anchor = "cc" }, { width = 1 / 3, height = 1, anchor = "cc" }, { width = 2 / 3, height = 1, anchor = "cc" }} },
+  left = { direction = 3, layouts = {{ width = 0.5, height = 1, anchor = "tl" }, { width = 1 / 3, height = 1, anchor = "tl" }, { width = 2 / 3, height = 1, anchor = "tl" }} },
+  right = { direction = 4, layouts = {{ width = 0.5, height = 1, anchor = "tr" }, { width = 1 / 3, height = 1, anchor = "tr" }, { width = 2 / 3, height = 1, anchor = "tr" }} },
+  top = { direction = 5, layouts = {{ width = 1, height = 0.5, anchor = "tl" }, { width = 1, height = 1 / 3, anchor = "tl" }, { width = 1, height = 2 / 3, anchor = "tl" }} },
 }
 
 local function showError()
@@ -82,9 +82,9 @@ function M.stop()
   operationSequence = operationSequence + 1
   cancelReadback()
 end
-function M.run(key)
-  if key == "f" then return maximize() end
-  if layoutCommands[key] then return resizeWindow(nextLayout(layoutCommands[key])) end
+function M.run(commandName)
+  if commandName == "full" then return maximize() end
+  if layoutDefinitions[commandName] then return resizeWindow(nextLayout(layoutDefinitions[commandName])) end
   return false
 end
 return M
