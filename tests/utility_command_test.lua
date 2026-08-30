@@ -13,11 +13,20 @@ local frontmostMode = nil
 local screenMethodFailure = nil
 local screenFrameFailure = nil
 local setFrameFailure = nil
+local moveScreenFailure = nil
 local readbackFailure = nil
 local windowCalls = 0
 local readbackCalls = 0
+local moveCalls = {}
 local screenFrame = { x = 100, y = 200, w = 1200, h = 900 }
 local currentFrame = { x = 100, y = 200, w = 1200, h = 900 }
+local screenIndex = 1
+local screenCount = 3
+local screenSpecs = {
+  { id = "A", frame = { x = 100, y = 200, w = 1200, h = 900 } },
+  { id = "B", frame = { x = 1300, y = 200, w = 1200, h = 900 } },
+  { id = "C", frame = { x = 2500, y = 200, w = 1200, h = 900 } },
+}
 local readbackFrames = nil
 local readbackMode = nil
 local setFrames = {}
@@ -78,6 +87,34 @@ local function frameCopy(frame)
   return { x = frame.x, y = frame.y, w = frame.w, h = frame.h }
 end
 
+local function currentScreen()
+  local spec = screenSpecs[screenIndex]
+  return {
+    id = spec.id,
+    frame = function()
+      if screenFrameFailure == "error" then error("screen frame failure") end
+      if screenFrameFailure == "nil" then return nil end
+      return frameCopy(screenIndex == 1 and screenFrame or spec.frame)
+    end,
+    previous = function()
+      local previousIndex = screenIndex == 1 and screenCount or screenIndex - 1
+      return {
+        id = screenSpecs[previousIndex].id,
+        index = previousIndex,
+        frame = function() return frameCopy(screenSpecs[previousIndex].frame) end,
+      }
+    end,
+    index = screenIndex,
+  }
+end
+
+local function configureScreens(count)
+  screenCount = count
+  screenIndex = 1
+  screenFrame = frameCopy(screenSpecs[1].frame)
+  currentFrame = frameCopy(screenFrame)
+end
+
 local function frameFromWindow()
   readbackCalls = readbackCalls + 1
   if readbackFailure == "error" then error("frame readback failure") end
@@ -124,13 +161,7 @@ _G.hs = {
       windowCalls = windowCalls + 1
       if frontmostMode == "error" then error("window lookup failure") end
       if frontmostMode == "nil" then return nil end
-      local screen = {
-        frame = function()
-          if screenFrameFailure == "error" then error("screen frame failure") end
-          if screenFrameFailure == "nil" then return nil end
-          return frameCopy(screenFrame)
-        end,
-      }
+      local screen = currentScreen()
       return {
         screen = function()
           if screenMethodFailure == "error" then error("window screen failure") end
@@ -144,7 +175,32 @@ _G.hs = {
           setFrames[#setFrames + 1] = frameCopy(frame)
           currentFrame = frameCopy(frame)
         end,
+        moveToScreen = function(_, target, noResize, ensureInScreenBounds, duration)
+          assert(not moveScreenFailure, "moveToScreen failure")
+          moveCalls[#moveCalls + 1] = {
+            target = target,
+            noResize = noResize,
+            ensureInScreenBounds = ensureInScreenBounds,
+            duration = duration,
+          }
+          screenIndex = target.index
+          screenFrame = frameCopy(screenSpecs[screenIndex].frame)
+          if ensureInScreenBounds then
+            currentFrame.x = math.max(screenFrame.x, math.min(currentFrame.x, screenFrame.x + screenFrame.w - currentFrame.w))
+            currentFrame.y = math.max(screenFrame.y, math.min(currentFrame.y, screenFrame.y + screenFrame.h - currentFrame.h))
+          end
+        end,
       }
+    end,
+  },
+  screen = {
+    allScreens = function()
+      local screens = {}
+      for index = 1, screenCount do
+        local spec = screenSpecs[index]
+        screens[index] = { id = spec.id, index = index, frame = function() return frameCopy(spec.frame) end }
+      end
+      return screens
     end,
   },
   task = {
@@ -180,7 +236,7 @@ local windowManagement = require("actions.window_management")
 
 local function press(modifiers, key)
   if table.concat(modifiers, "+") == "cmd+ctrl" then
-    local names = { t = "bottom", c = "center", g = "left", f = "full", r = "right", n = "top" }
+    local names = { t = "bottom", c = "center", g = "left", f = "full", r = "right", n = "top", p = "previous-display" }
     return windowManagement.run(names[key] or key)
   end
   local commands = { f = { finderExecutable, finderScript }, c = { titleCaseExecutable, titleCaseScript } }
@@ -364,6 +420,66 @@ local function assertReadbackFailure(failureValue, failureName)
 end
 assertReadbackFailure("nil", "window:frame nil")
 assertReadbackFailure("error", "window:frame exception")
+
+-- Display movement uses Previous in a two-screen cycle and remains valid for
+-- larger configurations. The mock clamps the resulting frame to verify the
+-- ensureInScreenBounds contract without relying on a real Hammerspoon window.
+local function assertContained(frame, screen, message)
+  assert(frame.x >= screen.x and frame.y >= screen.y, message .. " origin")
+  assert(frame.x + frame.w <= screen.x + screen.w, message .. " right edge")
+  assert(frame.y + frame.h <= screen.y + screen.h, message .. " bottom edge")
+end
+
+configureScreens(2)
+local priorMoves = #moveCalls
+press({ "cmd", "ctrl" }, "p")
+assertEqual(#moveCalls, priorMoves + 1, "two-screen A to B moves once")
+local move = moveCalls[#moveCalls]
+assertEqual(move.target.id, "B", "two-screen A previous target")
+assertEqual(move.noResize, false, "moveToScreen noResize")
+assertEqual(move.ensureInScreenBounds, true, "moveToScreen ensureInScreenBounds")
+assertEqual(move.duration, 0, "moveToScreen duration")
+assertContained(currentFrame, screenSpecs[2].frame, "A to B frame is contained")
+press({ "cmd", "ctrl" }, "p")
+assertEqual(moveCalls[#moveCalls].target.id, "A", "two-screen B previous target")
+assertContained(currentFrame, screenSpecs[1].frame, "B to A frame is contained")
+
+configureScreens(3)
+press({ "cmd", "ctrl" }, "p")
+assertEqual(moveCalls[#moveCalls].target.id, "C", "three-screen A previous target")
+press({ "cmd", "ctrl" }, "p")
+assertEqual(moveCalls[#moveCalls].target.id, "B", "three-screen C previous target")
+press({ "cmd", "ctrl" }, "p")
+assertEqual(moveCalls[#moveCalls].target.id, "A", "three-screen B previous target")
+
+configureScreens(1)
+local priorOneScreenMoves, priorOneScreenAlerts = #moveCalls, #alerts
+local oneScreenOK = pcall(function() press({ "cmd", "ctrl" }, "p") end)
+assertEqual(oneScreenOK, true, "one-screen movement does not throw")
+assertEqual(#moveCalls, priorOneScreenMoves, "one-screen movement is a no-op")
+assertEqual(#alerts, priorOneScreenAlerts, "one-screen movement has no notification")
+
+configureScreens(2)
+moveScreenFailure = true
+local priorMoveFailureAlerts, priorMoveFailureMoves = #alerts, #moveCalls
+local moveFailureOK = pcall(function() press({ "cmd", "ctrl" }, "p") end)
+moveScreenFailure = nil
+assertEqual(moveFailureOK, true, "move failure is contained")
+assertEqual(#moveCalls, priorMoveFailureMoves, "failed move is not recorded as successful")
+assertFailureAlert(priorMoveFailureAlerts, "moveToScreen failure notification")
+press({ "cmd", "ctrl" }, "p")
+assertEqual(#moveCalls, priorMoveFailureMoves + 1, "movement continues after move failure")
+
+-- Moving displays cancels a pending layout readback and invalidates its stale callback.
+setReadbackOffset("x", 3)
+press({ "cmd", "ctrl" }, "t")
+local staleMoveTimer = latestTimer
+local priorMoveStaleAlerts = #alerts
+press({ "cmd", "ctrl" }, "p")
+assert(staleMoveTimer.stopped, "display movement stops prior readback timer")
+assertEqual(activeTimerCount(), 0, "display movement leaves no pending readback")
+staleMoveTimer.callback()
+assertEqual(#alerts, priorMoveStaleAlerts, "stale display-movement callback cannot alert")
 
 -- New resize and stop cancel pending timers; stale callbacks cannot report.
 setReadbackOffset("x", 3)

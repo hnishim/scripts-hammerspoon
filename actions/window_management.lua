@@ -67,6 +67,21 @@ local function resizeWindow(layout)
   readback(window, target, operation, 1)
   return true
 end
+local function moveToPreviousDisplay()
+  cancelReadback(); operationSequence = operationSequence + 1
+  local windowOK, window = pcall(function() return hs.window.frontmostWindow() end)
+  if not windowOK or not window then showError(); return false end
+  local screenOK, screen = pcall(function() return window:screen() end)
+  if not screenOK or not screen then showError(); return false end
+  local screensOK, screens = pcall(function() return hs.screen.allScreens() end)
+  if not screensOK or type(screens) ~= "table" then showError(); return false end
+  if #screens < 2 then return true end
+  local targetOK, target = pcall(function() return screen:previous() end)
+  if not targetOK or not target then showError(); return false end
+  local moveOK = pcall(function() window:moveToScreen(target, false, true, 0) end)
+  if not moveOK then showError(); return false end
+  return true
+end
 local function nextLayout(command)
   if mimiState.direction ~= command.direction then mimiState.direction, mimiState.cycle = command.direction, 1
   elseif mimiState.cycle == 1 then mimiState.cycle = 2
@@ -83,6 +98,7 @@ function M.stop()
   cancelReadback()
 end
 function M.run(commandName)
+  if commandName == "previous-display" then return moveToPreviousDisplay() end
   if commandName == "full" then return maximize() end
   if layoutDefinitions[commandName] then return resizeWindow(nextLayout(layoutDefinitions[commandName])) end
   return false

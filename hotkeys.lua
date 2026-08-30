@@ -45,6 +45,10 @@ for _, binding in ipairs({
     callback = function() return windowManagement.run(binding[2]) end,
   }
 end
+bindings[#bindings + 1] = {
+  modifiers = { "ctrl", "cmd" }, key = "P",
+  callback = function() return windowManagement.run("previous-display") end,
+}
 for _, binding in ipairs({
   { "f", "/usr/bin/osascript", raycastRoot .. "two-panes-finder.applescript" },
   { "c", "/bin/bash", raycastRoot .. "title-case-chicago.sh" },

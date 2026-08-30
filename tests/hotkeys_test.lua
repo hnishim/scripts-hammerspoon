@@ -99,6 +99,7 @@ for _, binding in ipairs({
 }) do
   expected[#expected + 1] = { { "cmd", "alt", "shift" }, binding[1], "utility", { binding[2], binding[3] } }
 end
+expected[#expected + 1] = { { "ctrl", "cmd" }, "P", "window", { "previous-display" } }
 
 local function expectedSignatures()
   local values = {}
@@ -118,8 +119,8 @@ local hotkeys = require("hotkeys")
 assert(type(hotkeys.start) == "function", "hotkeys.start() must be exported")
 local firstStartOK = pcall(hotkeys.start)
 assertEqual(firstStartOK, true, "first hotkeys start completes without error")
-assertEqual(#bindCalls, 29, "first start registers exactly 29 hotkeys")
-assertTableEqual(observedSignatures(1, 29), expectedSignatures(), "registered modifier/key combinations")
+assertEqual(#bindCalls, 30, "first start registers exactly 30 hotkeys")
+assertTableEqual(observedSignatures(1, 30), expectedSignatures(), "registered modifier/key combinations")
 
 for _, binding in ipairs(expected) do
   handles[signature(binding[1], binding[2])].callback()
@@ -132,22 +133,22 @@ for index, binding in ipairs(expected) do
 end
 
 local firstHandles = {}
-for index = 1, 29 do firstHandles[index] = bindCalls[index] end
+for index = 1, 30 do firstHandles[index] = bindCalls[index] end
 
 local reloadStartOK = pcall(hotkeys.start)
 assertEqual(reloadStartOK, true, "reload hotkeys completes without error")
-assertEqual(#bindCalls, 58, "reload registers a fresh set of 29 hotkeys")
-assertEqual(#deletedHandles, 29, "reload deletes every previous hotkey handle")
+assertEqual(#bindCalls, 60, "reload registers a fresh set of 30 hotkeys")
+assertEqual(#deletedHandles, 30, "reload deletes every previous hotkey handle")
 for index, handle in ipairs(firstHandles) do
   assertEqual(handle.deleted, true, string.format("first-start handle %d is deleted", index))
 end
-for index = 30, 58 do
-  assertEqual(bindCalls[index].deleted, false, string.format("reload handle %d remains active", index - 29))
+for index = 31, 60 do
+  assertEqual(bindCalls[index].deleted, false, string.format("reload handle %d remains active", index - 30))
 end
 
 local secondHandles = {}
-for index = 30, 58 do secondHandles[#secondHandles + 1] = bindCalls[index] end
-assertEqual(countEntries(handles), 29, "active registry contains exactly the reload handles")
+for index = 31, 60 do secondHandles[#secondHandles + 1] = bindCalls[index] end
+assertEqual(countEntries(handles), 30, "active registry contains exactly the reload handles")
 for _, handle in ipairs(secondHandles) do
   assertEqual(handles[handle.key], handle, "active registry points to each reload handle")
 end
@@ -169,12 +170,12 @@ for _, handle in ipairs(failureHandles) do
   assertEqual(handle.deleted, true, "failure start deletes every partial new handle")
   assertEqual(handles[handle.key], nil, "failed start leaves no partial registry entry")
 end
-assert(countEntries(handles) == 0 or countEntries(handles) == 29,
+assert(countEntries(handles) == 0 or countEntries(handles) == 30,
   "failed start leaves either no handles or the previous complete set")
 
 local recoveryStartOK = pcall(hotkeys.start)
 assertEqual(recoveryStartOK, true, "start completes after injected failure is removed")
-assertEqual(#bindCalls, afterFailureCount + 29, "recovery start registers a complete fresh set")
+assertEqual(#bindCalls, afterFailureCount + 30, "recovery start registers a complete fresh set")
 for index, handle in ipairs(secondHandles) do
   assertEqual(handle.deleted, true, string.format("second-start handle %d is deleted after recovery", index))
 end
@@ -183,7 +184,7 @@ for index = afterFailureCount + 1, #bindCalls do
   assertEqual(handles[bindCalls[index].key], bindCalls[index],
     string.format("recovery handle %d is active in the registry", index - afterFailureCount))
 end
-assertEqual(countEntries(handles), 29, "recovery restores the complete active registry")
+assertEqual(countEntries(handles), 30, "recovery restores the complete active registry")
 
 -- Loading main with action modules that fail makes an accidental multi-entrypoint
 -- startup observable without inspecting source text.
