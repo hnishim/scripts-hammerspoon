@@ -1,5 +1,6 @@
 local launchCalls = {}
 local hudEvents = {}
+local hudDurations = {}
 local alertCalls = {}
 local launchResults = {}
 
@@ -49,6 +50,7 @@ local fixtureApps = loadFixtureApps()
 local function resetObservedState()
   for key in pairs(launchCalls) do launchCalls[key] = nil end
   for key in pairs(hudEvents) do hudEvents[key] = nil end
+  for key in pairs(hudDurations) do hudDurations[key] = nil end
   for key in pairs(alertCalls) do alertCalls[key] = nil end
   for key in pairs(launchResults) do launchResults[key] = nil end
 end
@@ -80,8 +82,9 @@ _G.hs = {
 package.path = "./?.lua;./tests/?.lua;" .. package.path
 package.preload["components.hud"] = function()
   return {
-    showTransient = function(message)
+    showTransient = function(message, seconds)
       hudEvents[#hudEvents + 1] = "show:" .. message
+      hudDurations[#hudDurations + 1] = seconds
       return {}
     end,
     closeTransient = function()
@@ -107,8 +110,8 @@ for _, row in ipairs(fixtureApps) do
   assertTableEqual(hudEvents, {
     "show:Launching " .. app .. "...",
     "launch:" .. app,
-    "close",
   }, "HUD and launch sequence for " .. app)
+  assertTableEqual(hudDurations, { 2 }, "HUD duration for " .. app)
   assertEqual(#alertCalls, 0, "successful launch should not notify failure for " .. app)
 end
 
@@ -119,8 +122,8 @@ assertTableEqual(launchCalls, { "Arc" }, "failed launch still attempts launchOrF
 assertTableEqual(hudEvents, {
   "show:Launching Arc...",
   "launch:Arc",
-  "close",
-}, "failed launch still closes HUD after launch attempt")
+}, "failed launch leaves transient HUD lifecycle to hs.alert")
+assertTableEqual(hudDurations, { 2 }, "failed launch HUD duration")
 assertEqual(#alertCalls, 1, "failed launch should show one alert")
 assertEqual(alertCalls[1].message, "コマンドを実行できませんでした。", "failed launch alert format")
 assertEqual(alertCalls[1].seconds, 2, "failed launch alert duration")
@@ -145,8 +148,8 @@ assertTableEqual(launchCalls, { "Missing App" }, "missing app failure is passed 
 assertTableEqual(hudEvents, {
   "show:Launching Missing App...",
   "launch:Missing App",
-  "close",
 }, "missing app failure still cleans up HUD")
+assertTableEqual(hudDurations, { 2 }, "missing app failure HUD duration")
 assertEqual(#alertCalls, 1, "missing app failure shows one error notification")
 
 resetObservedState()

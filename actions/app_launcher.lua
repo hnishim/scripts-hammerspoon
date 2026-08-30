@@ -11,11 +11,10 @@ end
 function M.run(app)
   if type(app) ~= "string" or app == "" then return false end
 
-  local launchAlertID = hud.showTransient("Launching " .. app .. "...", 2)
+  hud.showTransient("Launching " .. app .. "...", 2)
   local ok, launched = pcall(function()
     return hs.application.launchOrFocus(app)
   end)
-  if launchAlertID then hud.closeTransient(launchAlertID) end
   if not ok or launched == false then showError() end
   return ok and launched ~= false
 end
