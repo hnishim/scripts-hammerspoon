@@ -9,6 +9,7 @@ local home = os.getenv("HOME") or ""
 local promptDir = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/prompts/ai-commands/"
 local raycastRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/raycast/"
 
+-- AIコマンド
 local bindings = {
   { modifiers = { "cmd", "alt", "shift" }, key = "B", callback = function()
     return aiCommands.run(promptDir .. "bio-ai_expert.md", "gemini-flash-lite-latest", "display")
@@ -21,6 +22,7 @@ local bindings = {
   end },
 }
 
+-- アプリランチャー
 local appBindings = {
   { "a", "Microsoft Teams" }, { "b", "Arc" }, { "c", "Ferdium" },
   { "d", "Cogito" }, { "e", "Cursor" }, { "f", "Finder" },
@@ -36,6 +38,8 @@ for _, appBinding in ipairs(appBindings) do
     callback = function() return appLauncher.run(app) end,
   }
 end
+
+-- ウィンドウ
 for _, binding in ipairs({
   { "t", "bottom" }, { "c", "center" }, { "g", "left" },
   { "r", "right" }, { "n", "top" }, { "f", "full" },
@@ -45,10 +49,13 @@ for _, binding in ipairs({
     callback = function() return windowManagement.run(binding[2]) end,
   }
 end
+
 bindings[#bindings + 1] = {
   modifiers = { "ctrl", "cmd" }, key = "P",
   callback = function() return windowManagement.run("previous-display") end,
 }
+
+-- スクリプト起動
 for _, binding in ipairs({
   { "f", "/usr/bin/osascript", raycastRoot .. "two-panes-finder.applescript" },
   { "c", "/bin/bash", raycastRoot .. "title-case-chicago.sh" },
