@@ -2,6 +2,7 @@ local aiCommands = require("actions.ai_commands")
 local appLauncher = require("actions.app_launcher")
 local windowManagement = require("actions.window_management")
 local utilityCommand = require("actions.utility_command")
+local urlCommands = require("actions.url_commands")
 
 local M = {}
 local handles = {}
@@ -47,6 +48,16 @@ for _, binding in ipairs({
   bindings[#bindings + 1] = {
     modifiers = { "cmd", "ctrl" }, key = binding[1],
     callback = function() return windowManagement.run(binding[2]) end,
+  }
+end
+
+-- URL検索
+for _, binding in ipairs({
+  { "G", "google" }, { "J", "dictionary" },
+}) do
+  bindings[#bindings + 1] = {
+    modifiers = { "cmd", "alt", "shift" }, key = binding[1],
+    callback = function() return urlCommands.run(binding[2]) end,
   }
 end
 

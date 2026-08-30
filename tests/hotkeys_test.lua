@@ -68,6 +68,7 @@ package.preload["actions.ai_commands"] = function() return actionStub("ai") end
 package.preload["actions.app_launcher"] = function() return actionStub("app") end
 package.preload["actions.window_management"] = function() return actionStub("window") end
 package.preload["actions.utility_command"] = function() return actionStub("utility") end
+package.preload["actions.url_commands"] = function() return actionStub("url") end
 package.preload["components.hud"] = function() return {} end
 
 local home = os.getenv("HOME") or ""
@@ -100,6 +101,8 @@ for _, binding in ipairs({
   expected[#expected + 1] = { { "cmd", "alt", "shift" }, binding[1], "utility", { binding[2], binding[3] } }
 end
 expected[#expected + 1] = { { "ctrl", "cmd" }, "P", "window", { "previous-display" } }
+expected[#expected + 1] = { { "cmd", "alt", "shift" }, "G", "url", { "google" } }
+expected[#expected + 1] = { { "cmd", "alt", "shift" }, "J", "url", { "dictionary" } }
 
 local function expectedSignatures()
   local values = {}
@@ -119,8 +122,8 @@ local hotkeys = require("hotkeys")
 assert(type(hotkeys.start) == "function", "hotkeys.start() must be exported")
 local firstStartOK = pcall(hotkeys.start)
 assertEqual(firstStartOK, true, "first hotkeys start completes without error")
-assertEqual(#bindCalls, 30, "first start registers exactly 30 hotkeys")
-assertTableEqual(observedSignatures(1, 30), expectedSignatures(), "registered modifier/key combinations")
+assertEqual(#bindCalls, 32, "first start registers exactly 32 hotkeys")
+assertTableEqual(observedSignatures(1, 32), expectedSignatures(), "registered modifier/key combinations")
 
 for _, binding in ipairs(expected) do
   handles[signature(binding[1], binding[2])].callback()
@@ -133,22 +136,22 @@ for index, binding in ipairs(expected) do
 end
 
 local firstHandles = {}
-for index = 1, 30 do firstHandles[index] = bindCalls[index] end
+for index = 1, 32 do firstHandles[index] = bindCalls[index] end
 
 local reloadStartOK = pcall(hotkeys.start)
 assertEqual(reloadStartOK, true, "reload hotkeys completes without error")
-assertEqual(#bindCalls, 60, "reload registers a fresh set of 30 hotkeys")
-assertEqual(#deletedHandles, 30, "reload deletes every previous hotkey handle")
+assertEqual(#bindCalls, 64, "reload registers a fresh set of 32 hotkeys")
+assertEqual(#deletedHandles, 32, "reload deletes every previous hotkey handle")
 for index, handle in ipairs(firstHandles) do
   assertEqual(handle.deleted, true, string.format("first-start handle %d is deleted", index))
 end
-for index = 31, 60 do
-  assertEqual(bindCalls[index].deleted, false, string.format("reload handle %d remains active", index - 30))
+for index = 33, 64 do
+  assertEqual(bindCalls[index].deleted, false, string.format("reload handle %d remains active", index - 32))
 end
 
 local secondHandles = {}
-for index = 31, 60 do secondHandles[#secondHandles + 1] = bindCalls[index] end
-assertEqual(countEntries(handles), 30, "active registry contains exactly the reload handles")
+for index = 33, 64 do secondHandles[#secondHandles + 1] = bindCalls[index] end
+assertEqual(countEntries(handles), 32, "active registry contains exactly the reload handles")
 for _, handle in ipairs(secondHandles) do
   assertEqual(handles[handle.key], handle, "active registry points to each reload handle")
 end
@@ -170,12 +173,12 @@ for _, handle in ipairs(failureHandles) do
   assertEqual(handle.deleted, true, "failure start deletes every partial new handle")
   assertEqual(handles[handle.key], nil, "failed start leaves no partial registry entry")
 end
-assert(countEntries(handles) == 0 or countEntries(handles) == 30,
+assert(countEntries(handles) == 0 or countEntries(handles) == 32,
   "failed start leaves either no handles or the previous complete set")
 
 local recoveryStartOK = pcall(hotkeys.start)
 assertEqual(recoveryStartOK, true, "start completes after injected failure is removed")
-assertEqual(#bindCalls, afterFailureCount + 30, "recovery start registers a complete fresh set")
+assertEqual(#bindCalls, afterFailureCount + 32, "recovery start registers a complete fresh set")
 for index, handle in ipairs(secondHandles) do
   assertEqual(handle.deleted, true, string.format("second-start handle %d is deleted after recovery", index))
 end
@@ -184,7 +187,7 @@ for index = afterFailureCount + 1, #bindCalls do
   assertEqual(handles[bindCalls[index].key], bindCalls[index],
     string.format("recovery handle %d is active in the registry", index - afterFailureCount))
 end
-assertEqual(countEntries(handles), 30, "recovery restores the complete active registry")
+assertEqual(countEntries(handles), 32, "recovery restores the complete active registry")
 
 -- Loading main with action modules that fail makes an accidental multi-entrypoint
 -- startup observable without inspecting source text.
@@ -195,7 +198,7 @@ package.preload["hotkeys"] = function()
 end
 for _, name in ipairs({
   "actions.ai_commands", "actions.app_launcher",
-  "actions.window_management", "actions.utility_command", "components.hud",
+  "actions.window_management", "actions.utility_command", "actions.url_commands", "components.hud",
 }) do
   package.loaded[name] = nil
   package.preload[name] = function() error("main must not load action module " .. name) end
