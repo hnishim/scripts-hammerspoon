@@ -4,11 +4,11 @@ local mimiState = { direction = nil, cycle = 0 }
 local pendingReadbackTimer
 local operationSequence = 0
 local layoutDefinitions = {
-  bottom = { direction = 1, layouts = {{ width = 1, height = 0.5, anchor = "bl" }, { width = 1, height = 1 / 3, anchor = "bl" }, { width = 1, height = 2 / 3, anchor = "bl" }} },
+  bottom = { direction = 1, layouts = {{ width = 1, height = 0.5, anchor = "bl", preserveHorizontal = true }, { width = 1, height = 2 / 3, anchor = "bl", preserveHorizontal = true }, { width = 1, height = 0.5, anchor = "bl", preserveHorizontal = true }} },
   center = { direction = 2, layouts = {{ width = 0.5, height = 1, anchor = "cc" }, { width = 1 / 3, height = 1, anchor = "cc" }, { width = 2 / 3, height = 1, anchor = "cc" }} },
   left = { direction = 3, layouts = {{ width = 0.5, height = 1, anchor = "tl" }, { width = 1 / 3, height = 1, anchor = "tl" }, { width = 2 / 3, height = 1, anchor = "tl" }} },
   right = { direction = 4, layouts = {{ width = 0.5, height = 1, anchor = "tr" }, { width = 1 / 3, height = 1, anchor = "tr" }, { width = 2 / 3, height = 1, anchor = "tr" }} },
-  top = { direction = 5, layouts = {{ width = 1, height = 0.5, anchor = "tl" }, { width = 1, height = 1 / 3, anchor = "tl" }, { width = 1, height = 2 / 3, anchor = "tl" }} },
+  top = { direction = 5, layouts = {{ width = 1, height = 0.5, anchor = "tl", preserveHorizontal = true }, { width = 1, height = 2 / 3, anchor = "tl", preserveHorizontal = true }, { width = 1, height = 0.5, anchor = "tl", preserveHorizontal = true }} },
 }
 
 local function showError()
@@ -21,14 +21,21 @@ local function cancelReadback()
   pendingReadbackTimer = nil
 end
 local function rounded(value) return math.floor(value + 0.5) end
-local function makeTarget(frame, layout)
+local function makeTarget(frame, layout, currentFrame)
   if type(frame) ~= "table" then return nil end
   for _, field in ipairs({ "x", "y", "w", "h" }) do if type(frame[field]) ~= "number" then return nil end end
+  if layout.preserveHorizontal then
+    if type(currentFrame) ~= "table" then return nil end
+    for _, field in ipairs({ "x", "y", "w", "h" }) do if type(currentFrame[field]) ~= "number" then return nil end end
+  end
   local left, top = rounded(frame.x), rounded(frame.y)
   local right, bottom = rounded(frame.x + frame.w), rounded(frame.y + frame.h)
   local width, height = rounded(frame.w * layout.width), rounded(frame.h * layout.height)
   local x, y = left, top
-  if layout.anchor == "bl" then y = bottom - height
+  if layout.preserveHorizontal then
+    x, width = currentFrame.x, currentFrame.w
+    if layout.anchor == "bl" then y = bottom - height end
+  elseif layout.anchor == "bl" then y = bottom - height
   elseif layout.anchor == "cc" then x, y = rounded((left + right - width) / 2), rounded((top + bottom - height) / 2)
   elseif layout.anchor == "tr" then x = right - width end
   return { x = x, y = y, w = width, h = height }
@@ -60,7 +67,13 @@ local function resizeWindow(layout)
   local screenOK, screen = pcall(function() return window:screen() end)
   if not screenOK or not screen then showError(); return false end
   local frameOK, frame = pcall(function() return screen:frame() end)
-  local target = frameOK and makeTarget(frame, layout) or nil
+  local currentFrame
+  if layout.preserveHorizontal then
+    local currentFrameOK
+    currentFrameOK, currentFrame = pcall(function() return window:frame() end)
+    if not currentFrameOK then currentFrame = nil end
+  end
+  local target = frameOK and makeTarget(frame, layout, currentFrame) or nil
   if not target then showError(); return false end
   local setOK = pcall(function() window:setFrame(target, 0) end)
   if not setOK then showError(); return false end

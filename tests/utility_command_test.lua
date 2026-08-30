@@ -15,6 +15,9 @@ local screenFrameFailure = nil
 local setFrameFailure = nil
 local moveScreenFailure = nil
 local readbackFailure = nil
+local initialWindowFrameFailure = nil
+local initialWindowFrameValue = nil
+local initialWindowFrameCalls = 0
 local windowCalls = 0
 local readbackCalls = 0
 local moveCalls = {}
@@ -115,16 +118,31 @@ local function configureScreens(count)
   currentFrame = frameCopy(screenFrame)
 end
 
-local function frameFromWindow()
-  readbackCalls = readbackCalls + 1
-  if readbackFailure == "error" then error("frame readback failure") end
-  if readbackFailure == "nil" then return nil end
-  if readbackMode then
+local function frameFromWindow(isInitialLookup)
+  if isInitialLookup then
+    initialWindowFrameCalls = initialWindowFrameCalls + 1
+  else
+    readbackCalls = readbackCalls + 1
+  end
+  if isInitialLookup and initialWindowFrameFailure then
+    local failure = initialWindowFrameFailure
+    initialWindowFrameFailure = nil
+    if failure == "error" then error("window frame failure") end
+    return failure == "nil" and nil or frameCopy(failure)
+  end
+  if isInitialLookup and initialWindowFrameValue then
+    local value = initialWindowFrameValue
+    initialWindowFrameValue = nil
+    return value
+  end
+  if not isInitialLookup and readbackFailure == "error" then error("frame readback failure") end
+  if not isInitialLookup and readbackFailure == "nil" then return nil end
+  if not isInitialLookup and readbackMode then
     local frame = frameCopy(currentFrame)
     frame[readbackMode.field] = frame[readbackMode.field] + readbackMode.delta
     return frame
   end
-  if readbackFrames and #readbackFrames > 0 then
+  if not isInitialLookup and readbackFrames and #readbackFrames > 0 then
     local frame = table.remove(readbackFrames, 1)
     if frame == "error" then error("frame readback failure") end
     if frame == "current" then return currentFrame end
@@ -157,18 +175,25 @@ _G.hs = {
     stop = function(timer) timer:stop() end,
   },
   window = {
-    frontmostWindow = function()
+      frontmostWindow = function()
       windowCalls = windowCalls + 1
       if frontmostMode == "error" then error("window lookup failure") end
       if frontmostMode == "nil" then return nil end
       local screen = currentScreen()
-      return {
+        return {
         screen = function()
           if screenMethodFailure == "error" then error("window screen failure") end
           if screenMethodFailure == "nil" then return nil end
           return screen
         end,
-        frame = function() return frameFromWindow() end,
+        frame = (function()
+          local initialFramePending = true
+          return function()
+            local isInitialLookup = initialFramePending
+            initialFramePending = false
+            return frameFromWindow(isInitialLookup)
+          end
+        end)(),
         setFrame = function(_, frame, duration)
           assertEqual(duration, 0, "setFrame duration")
           if setFrameFailure then error("setFrame failure") end
@@ -283,6 +308,24 @@ local function assertLayout(key, width, height, anchor)
   assertExactFrame(setFrames[#setFrames], expectedFrame(width, height, anchor), key .. " exact target")
 end
 
+local function expectedVerticalFrame(before, heightPercent, anchor)
+  local screen = screenFrame
+  local function round(value) return math.floor(value + 0.5) end
+  local h = round(screen.h * heightPercent)
+  local y = round(screen.y)
+  if anchor == "bottom" then y = round(screen.y + screen.h) - h end
+  return { x = before.x, y = y, w = before.w, h = h }
+end
+
+local function assertVerticalLayout(key, before, heightPercent, anchor)
+  currentFrame = frameCopy(before)
+  local beforeSetFrames = #setFrames
+  press({ "cmd", "ctrl" }, key)
+  assertEqual(#setFrames, beforeSetFrames + 1, key .. " vertical setFrame count")
+  assertExactFrame(setFrames[#setFrames], expectedVerticalFrame(before, heightPercent, anchor),
+    key .. " preserves horizontal frame and uses screen vertical bounds")
+end
+
 local function assertNoAlert(action, message)
   local count = #alerts
   action()
@@ -352,9 +395,9 @@ local function assertWindowFailure(failureName, setFailure, failureValue)
 end
 
 -- Public layout mapping, exact requested geometry, direction cycles, maximize reset, and dynamic frames.
-assertLayout("t", 1, 0.5, "bl")
-assertLayout("t", 1, 1 / 3, "bl")
-assertLayout("t", 1, 2 / 3, "bl")
+assertVerticalLayout("t", { x = 180, y = 260, w = 640, h = 420 }, 0.5, "bottom")
+assertVerticalLayout("t", { x = 180, y = 260, w = 640, h = 450 }, 2 / 3, "bottom")
+assertVerticalLayout("t", { x = 180, y = 260, w = 640, h = 600 }, 0.5, "bottom")
 assertLayout("c", 0.5, 1, "cc")
 assertLayout("c", 1 / 3, 1, "cc")
 assertLayout("c", 2 / 3, 1, "cc")
@@ -364,15 +407,20 @@ assertLayout("g", 2 / 3, 1, "tl")
 assertLayout("r", 0.5, 1, "tr")
 assertLayout("r", 1 / 3, 1, "tr")
 assertLayout("r", 2 / 3, 1, "tr")
-assertLayout("n", 1, 0.5, "tl")
-assertLayout("n", 1, 1 / 3, "tl")
-assertLayout("n", 1, 2 / 3, "tl")
+assertVerticalLayout("n", { x = 320, y = 280, w = 700, h = 400 }, 0.5, "top")
+assertVerticalLayout("n", { x = 320, y = 280, w = 700, h = 450 }, 2 / 3, "top")
+assertVerticalLayout("n", { x = 320, y = 280, w = 700, h = 600 }, 0.5, "top")
 local beforeMaximizeTasks, beforeMaximizeWindows = taskNewCalls, windowCalls
 press({ "cmd", "ctrl" }, "f")
 assertEqual(taskNewCalls, beforeMaximizeTasks, "maximize does not invoke hs.task.new")
 assertEqual(windowCalls, beforeMaximizeWindows + 1, "maximize uses hs.window path")
 assertExactFrame(setFrames[#setFrames], expectedFrame(1, 1, "tl"), "maximize exact target")
-assertLayout("t", 1, 0.5, "bl")
+assertVerticalLayout("t", { x = 420, y = 300, w = 500, h = 500 }, 0.5, "bottom")
+assertVerticalLayout("t", { x = -700, y = 300, w = 2600, h = 500 }, 2 / 3, "bottom")
+press({ "cmd", "ctrl" }, "f")
+assertVerticalLayout("t", { x = -700, y = 300, w = 2600, h = 500 }, 0.5, "bottom")
+press({ "cmd", "ctrl" }, "f")
+assertVerticalLayout("n", { x = -700, y = 300, w = 2600, h = 500 }, 0.5, "top")
 screenFrame = { x = 10.25, y = 20.75, w = 1001.5, h = 777.25 }
 assertLayout("r", 0.5, 1, "tr")
 assertExactFrame(setFrames[#setFrames], expectedFrame(0.5, 1, "tr"), "non-integer screen rounded target")
@@ -407,6 +455,21 @@ assertWindowFailure("window:screen exception", function(value) screenMethodFailu
 assertWindowFailure("screen:frame nil", function(value) screenFrameFailure = value end, "nil")
 assertWindowFailure("screen:frame exception", function(value) screenFrameFailure = value end, "error")
 assertWindowFailure("window:setFrame exception", function(value) setFrameFailure = value end, "error")
+local function assertInitialWindowFrameFailure(value, failureName)
+  currentFrame = { x = -900, y = 350, w = 2600, h = 500 }
+  initialWindowFrameFailure, initialWindowFrameValue = nil, nil
+  if type(value) == "table" then initialWindowFrameValue = value else initialWindowFrameFailure = value end
+  local priorAlerts, priorFrames = #alerts, #setFrames
+  press({ "cmd", "ctrl" }, "t")
+  initialWindowFrameFailure, initialWindowFrameValue = nil, nil
+  assertFailureAlert(priorAlerts, failureName .. " notification")
+  assertEqual(#setFrames, priorFrames, failureName .. " does not set a frame")
+  assertEqual(activeTimerCount(), 0, failureName .. " leaves no timer")
+end
+assertInitialWindowFrameFailure("nil", "window:frame nil before setFrame")
+assertInitialWindowFrameFailure("error", "window:frame exception before setFrame")
+assertInitialWindowFrameFailure({ x = -900, y = 350, w = 2600 }, "window:frame missing field before setFrame")
+assertInitialWindowFrameFailure({ x = -900, y = 350, w = "invalid", h = 500 }, "window:frame invalid field before setFrame")
 local function assertReadbackFailure(failureValue, failureName)
   setReadback(nil)
   readbackFailure = failureValue
