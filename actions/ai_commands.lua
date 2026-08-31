@@ -8,6 +8,7 @@ local httpTimeout = 65
 local operationSequence = 0
 local activeTask
 local runCommand
+local runPrompt
 
 local function trim(value)
   return (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -97,17 +98,29 @@ function M.stop()
 end
 
 local function acquireSelection()
-  if not hs.uielement or not hs.uielement.focusedElement then showSafeError(); return nil, false end
+  if not hs.uielement or not hs.uielement.focusedElement then return nil, false end
   local focusedOK, focused = pcall(hs.uielement.focusedElement)
-  if not focusedOK or not focused then showSafeError(); return nil, false end
+  if not focusedOK or not focused then return nil, false end
   local selectedOK, selection = pcall(function() return focused:selectedText() end)
-  if not selectedOK or selection == nil then showSafeError(); return nil, false end
+  if not selectedOK or selection == nil then return nil, false end
   return selection, true
 end
 
 local function frontmost(target)
+  if not target or type(target.isFrontmost) ~= "function" then return false end
   local ok, value = pcall(function() return target:isFrontmost() end)
   return ok and value == true
+end
+
+local function bundleID(target)
+  if not target or type(target.bundleID) ~= "function" then return false end
+  local ok, value = pcall(function() return target:bundleID() end)
+  return ok and value or false
+end
+
+local function isPowerPoint(target)
+  local id = bundleID(target)
+  return id == "com.microsoft.Powerpoint" or id == "com.microsoft.PowerPoint"
 end
 
 local function clipboardContents()
@@ -134,25 +147,57 @@ local function activate(target)
   return ok and result ~= false
 end
 
-local function stableClipboardSnapshot()
+local function clipboardSnapshot()
+  if not hs.pasteboard or type(hs.pasteboard.allContentTypes) ~= "function" then return false end
   local beforeOK, before = changeCount()
   if not beforeOK then return false end
-  local contentsOK, contents = clipboardContents()
-  if not contentsOK then return false end
+  local typesOK, types = pcall(hs.pasteboard.allContentTypes)
+  if not typesOK or type(types) ~= "table" then return false end
   local afterOK, after = changeCount()
   if not afterOK or before ~= after then return false end
-  return true, contents, after
+  if #types == 0 then return true, { kind = "empty" }, after, types end
+  if #types ~= 1 or type(hs.pasteboard.readAllData) ~= "function" then return false end
+  local dataOK, data = pcall(hs.pasteboard.readAllData)
+  if not dataOK or type(data) ~= "table" then return false end
+  return true, { kind = "data", data = data }, after, types
 end
 
-local function finishReplace(target, response, complete)
+local function restoreClipboard(snapshot)
+  if not snapshot then return false end
+  if snapshot.kind == "empty" then return clearContents() end
+  if snapshot.kind == "data" and type(hs.pasteboard.writeAllData) == "function" then
+    local ok, result = pcall(hs.pasteboard.writeAllData, snapshot.data)
+    return ok and result ~= false
+  end
+  return false
+end
+
+local function clipboardIsText(types)
+  if type(types) ~= "table" or #types ~= 1 or type(types[1]) ~= "table" then return false end
+  for _, uti in ipairs(types[1]) do
+    if uti == "public.utf8-plain-text" or uti == "public.utf16-external-plain-text"
+        or uti == "public.rtf" or uti == "com.apple.rtfd" or uti == "com.apple.flat-rtfd" then
+      return true
+    end
+  end
+  return false
+end
+
+local function clipboardMatches(expectedContents, expectedCount)
+  local snapshotOK, _, currentCount, types = clipboardSnapshot()
+  if not snapshotOK or currentCount ~= expectedCount then return false end
+  if not clipboardIsText(types) then return false end
+  local contentsOK, contents = clipboardContents()
+  return contentsOK and contents == expectedContents
+end
+
+local function finishReplace(target, response, complete, priorSnapshot)
   local function done(errorMessage)
     complete(errorMessage)
   end
   local function restoreIfUntouched(prior, postCount, reportError)
-    local currentOK, current, currentCount = stableClipboardSnapshot()
-    if not currentOK then done("error"); return end
-    if current ~= response or currentCount ~= postCount then done(reportError and "error" or nil); return end
-    local restored = prior == nil and clearContents() or setContents(prior)
+    if not clipboardMatches(response, postCount) then done("error"); return end
+    local restored = restoreClipboard(prior)
     if restored then done(reportError and "error" or nil) else done("error") end
   end
   local function scheduleRestore(prior, postCount, reportError)
@@ -169,13 +214,29 @@ local function finishReplace(target, response, complete)
   if not target then scheduleError(); return end
 
   if not target or not activate(target) or not frontmost(target) then scheduleError(); return end
-  local priorOK, prior, beforeCount = stableClipboardSnapshot()
-  if not priorOK or not setContents(response) then scheduleError(); return end
-  local responseOK, current, postCount = stableClipboardSnapshot()
-  if not responseOK or current ~= response or postCount ~= beforeCount + 1 then scheduleError(); return end
+  local prior, beforeCount
+  if priorSnapshot then
+    prior = priorSnapshot.snapshot
+    beforeCount = priorSnapshot.currentCount or priorSnapshot.count
+    if priorSnapshot.currentCount and not clipboardMatches(priorSnapshot.currentContents, beforeCount) then
+      scheduleError(); return
+    end
+    if not priorSnapshot.currentCount then
+      local currentCountOK, currentCount = changeCount()
+      if not currentCountOK or currentCount ~= beforeCount then scheduleError(); return end
+    end
+  else
+    local priorOK
+    priorOK, prior, beforeCount = clipboardSnapshot()
+    if not priorOK then scheduleError(); return end
+  end
+  if not setContents(response) then scheduleError(); return end
+  local responseOK, _, postCount = clipboardSnapshot()
+  if not responseOK or postCount ~= beforeCount + 1 then scheduleError(); return end
+  local responseContentsOK, responseContents = clipboardContents()
+  if not responseContentsOK or responseContents ~= response then scheduleError(); return end
   if not frontmost(target) then scheduleError(); return end
-  local beforePasteOK, beforePaste, beforePasteCount = stableClipboardSnapshot()
-  if not beforePasteOK or beforePaste ~= response or beforePasteCount ~= postCount then scheduleError(); return end
+  if not clipboardMatches(response, postCount) then scheduleError(); return end
   local pasteOK, pasteResult = pcall(hs.eventtap.keyStroke, { "cmd" }, "v")
   if not pasteOK or pasteResult == false then scheduleRestore(prior, postCount, true); return end
   scheduleRestore(prior, postCount)
@@ -231,7 +292,7 @@ local function startGemini(state, command, prompt, apiKey, target)
     local responseOK, response = responseText(payload)
     if not responseOK or response == "" then release(state, true); return end
     if target then
-      finishReplace(target, response, function(errorMessage) release(state, errorMessage) end)
+      finishReplace(target, response, function(errorMessage) release(state, errorMessage) end, state.priorSnapshot)
       return
     end
     release(state)
@@ -298,7 +359,41 @@ local function startKeychain(state, command, prompt, target)
   armWatchdog()
 end
 
-local function runPrompt(promptPath, model)
+local function runPowerPointFallback(promptPath, model, mode, target)
+  if not frontmost(target) then showSafeError(); return false end
+  local priorOK, prior, beforeCount = clipboardSnapshot()
+  if not priorOK then showSafeError(); return false end
+  local copyOK, copyResult = pcall(hs.eventtap.keyStroke, { "cmd" }, "c")
+  if not copyOK or copyResult == false then showSafeError(); return false end
+  local timerOK = scheduleTimer(0.1, function()
+    if not isPowerPoint(target) or not frontmost(target) then showSafeError(); return end
+    local currentOK, current, currentCount, types = clipboardSnapshot()
+    if not currentOK then showSafeError(); return end
+    if currentCount == beforeCount then
+      runPrompt(promptPath, model)
+      return
+    end
+    if currentCount ~= beforeCount + 1 or not clipboardIsText(types) then showSafeError(); return end
+    local contentsOK, contents = clipboardContents()
+    if not contentsOK or type(contents) ~= "string" then showSafeError(); return end
+    if contents == "" then
+      if not restoreClipboard(prior) then showSafeError(); return end
+      runPrompt(promptPath, model)
+      return
+    end
+    if mode ~= "replace" then
+      if not restoreClipboard(prior) then showSafeError(); return end
+    end
+    local priorSnapshot = { snapshot = prior, count = beforeCount,
+      currentCount = currentCount, currentContents = contents }
+    runCommand(promptPath, model, mode, contents, mode == "replace" and target or nil,
+      mode == "replace" and priorSnapshot or nil)
+  end)
+  if not timerOK then showSafeError(); return false end
+  return true
+end
+
+runPrompt = function(promptPath, model)
   local button, input = hs.dialog.textPrompt("Gemini AI command", "Geminiへ渡すテキストを入力してください。", "", "実行", "キャンセル")
   if button ~= "実行" then return end
   input = trim(input)
@@ -306,7 +401,7 @@ local function runPrompt(promptPath, model)
   runCommand(promptPath, model, "display", input, nil)
 end
 
-runCommand = function(promptPath, model, mode, input, target)
+runCommand = function(promptPath, model, mode, input, target, priorSnapshot)
   if activeTask then showMessage("別のAIコマンドを実行中です。"); return end
   if type(promptPath) ~= "string" or promptPath == "" or type(model) ~= "string" or model == ""
       or (mode ~= "display" and mode ~= "replace") or type(input) ~= "string" then
@@ -318,7 +413,8 @@ runCommand = function(promptPath, model, mode, input, target)
   if not renderedOK then showSafeError(); return end
   prompt = prompt:gsub("%s+$", "")
   operationSequence = operationSequence + 1
-  local state = { token = operationSequence, done = false, keyTask = nil, watchdog = nil }
+  local state = { token = operationSequence, done = false, keyTask = nil, watchdog = nil,
+    priorSnapshot = priorSnapshot }
   activeTask = state
   hud.show("Gemini処理中...")
   startKeychain(state, { model = model }, prompt, target)
@@ -331,18 +427,27 @@ function M.run(promptPath, model, mode)
     showSafeError(); return false
   end
   local target
-  if mode == "replace" then
-    local ok
-    ok, target = pcall(hs.application.frontmostApplication)
-    if not ok or not target then showSafeError(); return false end
-  end
+  local appOK, app = pcall(hs.application.frontmostApplication)
+  if appOK then target = app end
+  if mode == "replace" and not target then showSafeError(); return false end
+  local powerPoint = isPowerPoint(target)
   local selection, acquired = acquireSelection()
-  if not acquired then return false end
+  if not acquired then
+    if powerPoint then return runPowerPointFallback(promptPath, model, mode, target) end
+    showSafeError()
+    return false
+  end
   if selection == "" then
     runPrompt(promptPath, model)
     return true
   end
-  return runCommand(promptPath, model, mode, selection, target)
+  local priorSnapshot
+  if mode == "replace" then
+    local priorOK, snapshot, count = clipboardSnapshot()
+    if not priorOK then showSafeError(); return false end
+    priorSnapshot = { snapshot = snapshot, count = count }
+  end
+  return runCommand(promptPath, model, mode, selection, mode == "replace" and target or nil, priorSnapshot)
 end
 
 return M

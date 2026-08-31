@@ -7,10 +7,26 @@ local hudEvents = {}
 local httpRequests = {}
 local clipboard = "prior clipboard"
 local clipboardCount = 1
+local clipboardItems = { ["public.utf8-plain-text"] = "prior clipboard" }
+local clipboardContentTypes = { { "public.utf8-plain-text" } }
+local clipboardFailure = nil
 local pasteCalls = 0
+local copyCalls = 0
+local clearCalls = 0
+local writeAllDataCalls = 0
 local frontmostTarget = {}
+local frontmostIsPowerPoint = false
+local frontmostPowerPointBundleID = "com.microsoft.Powerpoint"
+local focusedSelection = "入力"
+local copyResult = "入力"
+local copyContentType = "public.utf8-plain-text"
+local copyFailure = nil
+local dialogResult = { "実行", "手入力" }
+local dialogCalls = {}
 local replaceFailure = nil
 local appLookupFailure = nil
+local frontmostLostAfterCopy = false
+local frontmostActuallyLost = false
 
 local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
@@ -66,6 +82,12 @@ _G.hs = {
       error("stub replaced below")
     end,
   },
+  dialog = {
+    textPrompt = function(...)
+      dialogCalls[#dialogCalls + 1] = { ... }
+      return dialogResult[1], dialogResult[2]
+    end,
+  },
   json = {
     encode = function(payload)
       local prompt = payload.contents[1].parts[1].text
@@ -75,7 +97,10 @@ _G.hs = {
   },
   uielement = {
     focusedElement = function()
-      return { selectedText = function() return "入力" end }
+      return { selectedText = function()
+        if focusedSelection == "error" then error("injected selectedText failure") end
+        return focusedSelection
+      end }
     end,
   },
   drawing = { windowLevels = { floating = 1 } },
@@ -83,12 +108,63 @@ _G.hs = {
   pasteboard = {
     getContents = function() return clipboard end,
     changeCount = function() return clipboardCount end,
-    setContents = function(value) clipboard = value; clipboardCount = clipboardCount + 1; return true end,
-    clearContents = function() clipboard = nil; clipboardCount = clipboardCount + 1; return true end,
+    allContentTypes = function()
+      if clipboardFailure == "allContentTypes" then error("injected allContentTypes failure") end
+      local types = {}
+      for index, itemTypes in ipairs(clipboardContentTypes) do
+        types[index] = {}
+        for utiIndex, uti in ipairs(itemTypes) do types[index][utiIndex] = uti end
+      end
+      return types
+    end,
+    readAllData = function()
+      if clipboardFailure == "readAllData" then error("injected readAllData failure") end
+      local copy = {}
+      for uti, data in pairs(clipboardItems) do copy[uti] = data end
+      return copy
+    end,
+    writeAllData = function(data)
+      if clipboardFailure == "writeAllData" then error("injected writeAllData failure") end
+      clipboardItems = {}
+      for uti, value in pairs(data) do clipboardItems[uti] = value end
+      clipboard = clipboardItems["public.utf8-plain-text"] or clipboardItems["public.utf16-external-plain-text"]
+      clipboardContentTypes = { { "public.utf8-plain-text" } }
+      clipboardCount = clipboardCount + 1
+      writeAllDataCalls = writeAllDataCalls + 1
+      return true
+    end,
+    setContents = function(value)
+      clipboard = value
+      clipboardItems = { ["public.utf8-plain-text"] = value }
+      clipboardContentTypes = { { "public.utf8-plain-text" } }
+      clipboardCount = clipboardCount + 1
+      return true
+    end,
+    clearContents = function()
+      if clipboardFailure == "clearContents" then error("injected clearContents failure") end
+      clipboard = nil
+      clipboardItems = {}
+      clipboardContentTypes = {}
+      clipboardCount = clipboardCount + 1
+      clearCalls = clearCalls + 1
+      return true
+    end,
   },
   eventtap = {
     keyStroke = function(modifiers, key)
-      assertEqual(table.concat(modifiers, "+"), "cmd", "replace uses Command-V")
+      assertEqual(table.concat(modifiers, "+"), "cmd", "AI command uses Command key")
+      if key == "c" then
+        if copyFailure == "keyStroke" then error("injected Command-C failure") end
+        copyCalls = copyCalls + 1
+        if copyFailure ~= "noChange" then
+          clipboard = copyResult
+          clipboardItems = { [copyContentType] = copyResult }
+          clipboardContentTypes = { { copyContentType } }
+          clipboardCount = clipboardCount + 1
+          if frontmostLostAfterCopy then frontmostActuallyLost = true end
+        end
+        return true
+      end
       assertEqual(key, "v", "replace uses Command-V")
       if replaceFailure == "keyStroke" then error("injected Command-V failure") end
       pasteCalls = pasteCalls + 1
@@ -109,7 +185,11 @@ _G.hs.http.asyncPost = function(url, body, headers, callback)
 end
 frontmostTarget.isFrontmost = function()
   if replaceFailure == "isFrontmost" then error("injected isFrontmost failure") end
+  if frontmostActuallyLost then return false end
   return true
+end
+frontmostTarget.bundleID = function()
+  return frontmostIsPowerPoint and frontmostPowerPointBundleID or "com.example.Editor"
 end
 frontmostTarget.activate = function()
   if replaceFailure == "activate" then error("injected activate failure") end
@@ -264,7 +344,23 @@ local function resetReplaceState()
   appLookupFailure = nil
   clipboard = "prior clipboard"
   clipboardCount = 1
+  clipboardItems = { ["public.utf8-plain-text"] = "prior clipboard" }
+  clipboardContentTypes = { { "public.utf8-plain-text" } }
+  clipboardFailure = nil
+  copyResult = "入力"
+  copyContentType = "public.utf8-plain-text"
+  focusedSelection = "入力"
+  frontmostIsPowerPoint = false
+  frontmostPowerPointBundleID = "com.microsoft.Powerpoint"
+  frontmostLostAfterCopy = false
+  frontmostActuallyLost = false
+  dialogResult = { "実行", "手入力" }
+  dialogCalls = {}
+  copyFailure = nil
   pasteCalls = 0
+  copyCalls = 0
+  clearCalls = 0
+  writeAllDataCalls = 0
   tasks.httpCallback = nil
 end
 
@@ -296,6 +392,266 @@ runReplaceFailure("Command-V failure", "keyStroke")
 runReplaceFailure("activate failure", "activate")
 runReplaceFailure("isFrontmost failure", "isFrontmost")
 runReplaceFailure("frontmost application failure", "frontmost")
+
+-- HIR-125: PowerPoint uses Accessibility selection first and Command-C only as a fallback.
+local function completeSuccessfulRequest(mode)
+  local firstTaskID = taskID + 1
+  ai.run(promptPath, model, mode or "display")
+  assertEqual(taskID, firstTaskID, "scenario creates account task")
+  completeTask(firstTaskID, 0, "test-account\n")
+  completeTask(firstTaskID + 1, 0, "test-api-key\n")
+  assert(tasks.httpCallback, "scenario starts HTTP request")
+  tasks.httpCallback(200, "{}", "")
+end
+
+local function completePowerPointReplaceFallback(label, selectionValue, copiedText, bundleID)
+  resetReplaceState()
+  frontmostIsPowerPoint = true
+  if bundleID then frontmostPowerPointBundleID = bundleID end
+  focusedSelection = selectionValue
+  copyResult = copiedText
+  clipboard = "置換前テキスト"
+  clipboardItems = {
+    ["public.utf8-plain-text"] = "置換前テキスト",
+    ["public.rtf"] = "{\\rtf1 置換前テキスト}",
+  }
+  clipboardContentTypes = { { "public.utf8-plain-text", "public.rtf" } }
+  local beforeTaskID = taskID
+  local beforeRequestCount = requestCount()
+  local beforeCopyCalls = copyCalls
+  local beforePasteCalls = pasteCalls
+  local beforeWriteCalls = writeAllDataCalls
+  ai.run(promptPath, model, "replace")
+  assertEqual(copyCalls, beforeCopyCalls + 1, label .. " invokes Command-C")
+  fireLatestTimer()
+  assertEqual(taskID, beforeTaskID + 1, label .. " starts Gemini account lookup")
+  completeTask(beforeTaskID + 1, 0, "test-account\n")
+  completeTask(beforeTaskID + 2, 0, "test-api-key\n")
+  assert(tasks.httpCallback, label .. " starts HTTP")
+  tasks.httpCallback(200, "{}", "")
+  assertEqual(requestCount(), beforeRequestCount + 1, label .. " sends one Gemini request")
+  assertEqual(httpRequests[#httpRequests].body, "PROMPT:AI prompt: " .. copiedText,
+    label .. " includes copied text in the Gemini request body")
+  assertEqual(pasteCalls, beforePasteCalls + 1, label .. " executes Command-V")
+  fireLatestTimer()
+  assertEqual(clipboard, "置換前テキスト", label .. " restores the original clipboard text")
+  assertEqual(clipboardItems["public.rtf"], "{\\rtf1 置換前テキスト}",
+    label .. " restores the original RTF data")
+  assertEqual(writeAllDataCalls, beforeWriteCalls + 1, label .. " restores all UTI data")
+end
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = "PowerPoint選択"
+local copyCallsBeforeSelection = copyCalls
+completeSuccessfulRequest()
+assertEqual(copyCalls, copyCallsBeforeSelection, "PowerPoint selected text does not invoke Command-C")
+assertEqual(httpRequests[#httpRequests].body, "PROMPT:AI prompt: PowerPoint選択",
+  "PowerPoint selected text goes directly to Gemini")
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = "応答待ち中の直接選択"
+local tasksBeforeReplaceClipboardChange = taskID
+local requestsBeforeReplaceClipboardChange = requestCount()
+local alertsBeforeReplaceClipboardChange = #alerts
+local pasteCallsBeforeReplaceClipboardChange = pasteCalls
+ai.run(promptPath, model, "replace")
+completeTask(tasksBeforeReplaceClipboardChange + 1, 0, "test-account\n")
+completeTask(tasksBeforeReplaceClipboardChange + 2, 0, "test-api-key\n")
+assertEqual(requestCount(), requestsBeforeReplaceClipboardChange + 1,
+  "direct Accessibility replace starts the Gemini request")
+hs.pasteboard.setContents("ユーザー変更")
+tasks.httpCallback(200, "{}", "")
+assertEqual(clipboard, "ユーザー変更", "replace does not overwrite a clipboard change during Gemini")
+assertEqual(pasteCalls, pasteCallsBeforeReplaceClipboardChange,
+  "replace does not execute Command-V after a clipboard conflict")
+fireLatestTimer()
+assertEqual(#alerts, alertsBeforeReplaceClipboardChange + 1,
+  "replace clipboard conflict shows a safe error")
+
+completePowerPointReplaceFallback("PowerPoint nil selection replace", nil, "replace Command-C選択")
+completePowerPointReplaceFallback("PowerPoint selectedText exception replace", "error", "replace Accessibility例外後の選択")
+completePowerPointReplaceFallback("legacy PowerPoint bundle ID replace", nil, "legacy Bundle ID選択", "com.microsoft.PowerPoint")
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = nil
+copyResult = "Command-C選択"
+local tasksBeforeCopySuccess = taskID
+ai.run(promptPath, model, "display")
+assertEqual(copyCalls, 1, "PowerPoint nil selection invokes Command-C for fallback success")
+fireLatestTimer()
+assertEqual(taskID, tasksBeforeCopySuccess + 1, "copied PowerPoint selection starts the account lookup")
+completeTask(tasksBeforeCopySuccess + 1, 0, "test-account\n")
+completeTask(tasksBeforeCopySuccess + 2, 0, "test-api-key\n")
+assert(tasks.httpCallback, "copied PowerPoint selection starts HTTP")
+tasks.httpCallback(200, "{}", "")
+assertEqual(httpRequests[#httpRequests].body, "PROMPT:AI prompt: Command-C選択",
+  "Command-C selection is included in the Gemini prompt body")
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = "error"
+copyResult = "Accessibility例外後の選択"
+local tasksBeforeAccessibilityFallback = taskID
+ai.run(promptPath, model, "display")
+assertEqual(copyCalls, 1, "PowerPoint selectedText exception invokes Command-C fallback")
+fireLatestTimer()
+assertEqual(taskID, tasksBeforeAccessibilityFallback + 1, "Accessibility exception fallback starts the account lookup")
+completeTask(tasksBeforeAccessibilityFallback + 1, 0, "test-account\n")
+completeTask(tasksBeforeAccessibilityFallback + 2, 0, "test-api-key\n")
+assert(tasks.httpCallback, "Accessibility exception fallback starts HTTP")
+tasks.httpCallback(200, "{}", "")
+assertEqual(httpRequests[#httpRequests].body, "PROMPT:AI prompt: Accessibility例外後の選択",
+  "Accessibility exception fallback includes copied text in the Gemini prompt body")
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = nil
+copyResult = "前面喪失後の選択"
+frontmostLostAfterCopy = true
+local tasksBeforeLostFrontmost = taskID
+local requestsBeforeLostFrontmost = requestCount()
+local alertsBeforeLostFrontmost = #alerts
+ai.run(promptPath, model, "replace")
+fireLatestTimer()
+assertEqual(taskID, tasksBeforeLostFrontmost, "PowerPoint losing frontmost status does not start Gemini task")
+assertEqual(requestCount(), requestsBeforeLostFrontmost, "PowerPoint losing frontmost status does not start HTTP")
+assertEqual(#alerts, alertsBeforeLostFrontmost + 1, "PowerPoint losing frontmost status shows a safe error")
+
+for _, failure in ipairs({ "allContentTypes", "readAllData" }) do
+  resetReplaceState()
+  frontmostIsPowerPoint = true
+  focusedSelection = nil
+  copyResult = "退避失敗時の選択"
+  clipboardFailure = failure
+  local copyCallsBeforeFailure = copyCalls
+  local tasksBeforeFailure = taskID
+  local requestsBeforeFailure = requestCount()
+  local alertsBeforeFailure = #alerts
+  ai.run(promptPath, model, "replace")
+  assertEqual(copyCalls, copyCallsBeforeFailure, failure .. " failure does not invoke Command-C")
+  assertEqual(taskID, tasksBeforeFailure, failure .. " failure does not start Gemini task")
+  assertEqual(requestCount(), requestsBeforeFailure, failure .. " failure does not start HTTP")
+  assertEqual(#alerts, alertsBeforeFailure + 1, failure .. " failure shows a safe error")
+end
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = nil
+copyResult = ""
+dialogResult = { "キャンセル", "" }
+local dialogsBeforeNoSelection = #dialogCalls
+local alertsBeforeNoSelection = #alerts
+ai.run(promptPath, model, "display")
+assertEqual(copyCalls, 1, "PowerPoint missing selection invokes Command-C once")
+fireLatestTimer()
+assertEqual(#dialogCalls, dialogsBeforeNoSelection + 1, "empty copied selection opens the input dialog")
+assertEqual(#alerts, alertsBeforeNoSelection, "empty copied selection is not a safe error")
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = "PowerPoint置換"
+clipboard = nil
+clipboardItems = {}
+clipboardContentTypes = {}
+local clearBeforeEmptyRestore = clearCalls
+completeSuccessfulRequest("replace")
+fireLatestTimer()
+assertEqual(clearCalls, clearBeforeEmptyRestore + 1, "empty clipboard snapshot restores with clearContents")
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = "全UTI置換"
+clipboard = "元テキスト"
+clipboardItems = {
+  ["public.utf8-plain-text"] = "元テキスト",
+  ["public.rtf"] = "{\\rtf1 元テキスト}",
+}
+clipboardContentTypes = { { "public.utf8-plain-text", "public.rtf" } }
+local writesBeforeAllUTI = writeAllDataCalls
+completeSuccessfulRequest("replace")
+fireLatestTimer()
+assertEqual(writeAllDataCalls, writesBeforeAllUTI + 1, "one clipboard item restores all UTI data")
+assertEqual(clipboardItems["public.rtf"], "{\\rtf1 元テキスト}", "one-item restore preserves the RTF UTI")
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = nil
+clipboardItems = {
+  ["public.utf8-plain-text"] = "既存テキスト",
+  ["public.html"] = "<p>既存テキスト</p>",
+}
+clipboardContentTypes = { { "public.utf8-plain-text" }, { "public.html" } }
+local tasksBeforeMultiple = taskID
+local alertsBeforeMultiple = #alerts
+ai.run(promptPath, model, "replace")
+assertEqual(taskID, tasksBeforeMultiple, "multiple clipboard items do not start Gemini")
+assertEqual(copyCalls, 0, "multiple clipboard items do not invoke Command-C")
+assertEqual(#alerts, alertsBeforeMultiple + 1, "multiple clipboard items show a safe error")
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = nil
+copyContentType = "public.png"
+copyResult = "PNG data"
+local tasksBeforeNonText = taskID
+local alertsBeforeNonText = #alerts
+ai.run(promptPath, model, "display")
+fireLatestTimer()
+assertEqual(taskID, tasksBeforeNonText, "non-text clipboard selection does not start Gemini")
+assertEqual(#alerts, alertsBeforeNonText + 1, "non-text clipboard selection shows a safe error")
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = nil
+copyContentType = "public.rtf"
+copyResult = "{\\rtf1 styled selection}"
+local tasksBeforeStyledText = taskID
+ai.run(promptPath, model, "display")
+fireLatestTimer()
+assertEqual(taskID, tasksBeforeStyledText + 1, "styledText clipboard selection proceeds to Gemini")
+completeTask(tasksBeforeStyledText + 1, 0, "test-account\n")
+completeTask(tasksBeforeStyledText + 2, 0, "test-api-key\n")
+tasks.httpCallback(200, "{}", "")
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = nil
+copyFailure = "noChange"
+dialogResult = { "キャンセル", "" }
+local dialogsBeforeCopyTimeout = #dialogCalls
+ai.run(promptPath, model, "display")
+fireLatestTimer()
+assertEqual(#dialogCalls, dialogsBeforeCopyTimeout + 1, "unchanged clipboard after Command-C falls back to the input dialog")
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = "復元競合"
+completeSuccessfulRequest("replace")
+hs.pasteboard.setContents("外部変更")
+fireLatestTimer()
+assertEqual(clipboard, "外部変更", "clipboard conflict prevents restoring over newer contents")
+assertEqual(pasteCalls, 1, "clipboard conflict after paste does not undo the completed paste")
+
+resetReplaceState()
+frontmostIsPowerPoint = true
+focusedSelection = "復元失敗"
+clipboardFailure = "writeAllData"
+local alertsBeforeRestoreFailure = #alerts
+completeSuccessfulRequest("replace")
+fireLatestTimer()
+assertEqual(#alerts, alertsBeforeRestoreFailure + 1, "clipboard restore failure shows a safe error")
+
+resetReplaceState()
+frontmostIsPowerPoint = false
+focusedSelection = "通常アプリ選択"
+local copyCallsBeforeNonPowerPoint = copyCalls
+completeSuccessfulRequest()
+assertEqual(copyCalls, copyCallsBeforeNonPowerPoint, "non-PowerPoint Accessibility path remains unchanged")
+assertEqual(httpRequests[#httpRequests].body, "PROMPT:AI prompt: 通常アプリ選択",
+  "non-PowerPoint selected text is sent through the existing path")
 
 local function assertInvalidInput(label, invalidPrompt, invalidModel, invalidMode)
   local beforeTasks, beforeRequests = taskID, requestCount()
