@@ -4,7 +4,6 @@ local tasks = {}
 local taskCallbacks = {}
 local taskID = 0
 local hudEvents = {}
-local resultShown = false
 local httpRequests = {}
 local clipboard = "prior clipboard"
 local clipboardCount = 1
@@ -81,16 +80,6 @@ _G.hs = {
   },
   drawing = { windowLevels = { floating = 1 } },
   screen = { mainScreen = function() return { frame = function() return { x = 0, y = 0, w = 1200, h = 800 } end } end },
-  webview = { new = function()
-    local view = {}
-    local function chain() return view end
-    view.windowStyle, view.windowTitle, view.level, view.allowGestures = chain, chain, chain, chain
-    view.allowTextEntry, view.closeOnEscape, view.shadow, view.windowCallback = chain, chain, chain, chain
-    view.html = function() return view end
-    view.show = function() resultShown = true; hudEvents[#hudEvents + 1] = "result"; return view end
-    view.delete = function() end
-    return view
-  end },
   pasteboard = {
     getContents = function() return clipboard end,
     changeCount = function() return clipboardCount end,
@@ -136,6 +125,14 @@ package.preload["components.hud"] = function()
     close = function()
       hudEvents[#hudEvents + 1] = "close"
     end,
+  }
+end
+local resultPanelCalls = { show = {}, stop = 0 }
+package.preload["components.result_panel"] = function()
+  return {
+    show = function(content) resultPanelCalls.show[#resultPanelCalls.show + 1] = content; hudEvents[#hudEvents + 1] = "result"; return true end,
+    close = function() end,
+    stop = function() resultPanelCalls.stop = resultPanelCalls.stop + 1; return true end,
   }
 end
 
@@ -196,8 +193,15 @@ assertEqual(httpRequests[1].headers["Content-Type"], "application/json", "AI req
 assertEqual(httpRequests[1].headers["x-goog-api-key"], "test-api-key", "AI request API key header")
 tasks.httpCallback(200, "{}", "")
 assertEqual(eventIndex("close") < eventIndex("result"), true, "success closes HUD before result display")
+assertEqual(#resultPanelCalls.show, 1, "success delegates result display to result panel")
+assertEqual(resultPanelCalls.show[1], "結果", "result panel receives the response text")
 assertEqual(pasteCalls, 0, "display mode does not paste")
 assertEqual(liveTimers(), 0, "success leaves no timers")
+
+local stopCallsBefore = resultPanelCalls.stop
+assertEqual(ai.stop(), nil, "stop preserves the existing no-value API")
+assertEqual(resultPanelCalls.stop, stopCallsBefore + 1, "stop delegates once to result panel")
+assertEqual(resultPanelCalls.stop, 1, "first stop invokes result panel stop exactly once")
 
 local eventsBeforeFailure = #hudEvents
 local alertsBeforeAccountFailure = #alerts

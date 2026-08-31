@@ -1,12 +1,12 @@
 local M = {}
 local hud = require("components.hud")
+local resultPanel = require("components.result_panel")
 
 local keychainService = "my.gemini-api.hammerspoon"
 local keychainTimeout = 10
 local httpTimeout = 65
 local operationSequence = 0
 local activeTask
-local resultWindow
 local runCommand
 
 local function trim(value)
@@ -81,21 +81,6 @@ local function startTask(task)
   return ok and result ~= false
 end
 
-local function htmlEscape(value)
-  return value:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
-    :gsub('"', "&quot;"):gsub("'", "&#39;"):gsub("\n", "<br>")
-end
-
-local function clearResultWindow(deleteWindow)
-  if deleteWindow and resultWindow then
-    local window = resultWindow
-    resultWindow = nil
-    window:delete()
-  else
-    resultWindow = nil
-  end
-end
-
 function M.stop()
   operationSequence = operationSequence + 1
   local state = activeTask
@@ -108,24 +93,7 @@ function M.stop()
     state.keyTask = nil
   end
   pcall(hud.close)
-end
-
-local function showResult(response)
-  clearResultWindow(true)
-  local screenFrame = hs.screen.mainScreen():frame()
-  local width, height = 760, 540
-  local frame = { x = screenFrame.x + (screenFrame.w - width) / 2, y = screenFrame.y + (screenFrame.h - height) / 2, w = width, h = height }
-  local html = [[<!doctype html><html lang="ja"><head><meta charset="utf-8"><style>
-    html, body { background: #1e1e22; color: #f5f5f7; margin: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
-    main { box-sizing: border-box; padding: 28px; white-space: normal; line-height: 1.65; }
-    .result { font-size: 17px; overflow-wrap: anywhere; }
-  </style></head><body><main><div class="result">]] .. htmlEscape(response) .. [[</div></main></body></html>]]
-  resultWindow = hs.webview.new(frame):windowStyle({ "titled", "closable", "resizable" })
-    :windowTitle("Gemini result"):level(hs.drawing.windowLevels.floating):allowGestures(false)
-    :allowTextEntry(false):closeOnEscape(true):shadow(true)
-    :windowCallback(function(action) if action == "closing" then clearResultWindow(false) end end)
-    :html(html):show()
+  pcall(resultPanel.stop)
 end
 
 local function acquireSelection()
@@ -267,8 +235,8 @@ local function startGemini(state, command, prompt, apiKey, target)
       return
     end
     release(state)
-    local showOK = pcall(showResult, response)
-    if not showOK then showSafeError() end
+    local showOK, displayed = pcall(resultPanel.show, response)
+    if not showOK or not displayed then showSafeError() end
   end
   local timerOK, timer = scheduleTimer(httpTimeout, function()
     if not isActive(state) then return end
