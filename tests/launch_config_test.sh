@@ -50,10 +50,12 @@ karabiner_dir="$dev_root/dotfiles/karabiner-elements"
 edn_path="$karabiner_dir/goku/karabiner.edn"
 json_path="$karabiner_dir/karabiner.json"
 main_path="$repo_root/main.lua"
+config_path="$repo_root/hotkeys_config.lua"
 
 require_file "$edn_path" "karabiner.edn is missing"
 require_file "$json_path" "karabiner.json is missing"
 require_file "$main_path" "main.lua is missing"
+require_file "$config_path" "hotkeys_config.lua is missing"
 require_command jq
 require_command lua
 
@@ -113,6 +115,12 @@ if [ -f "$hotkeys_path" ] && LC_ALL=C grep -Eq 'hs\.hotkey\.bind' "$hotkeys_path
   pass "hotkeys.lua owns hotkey registration"
 else
   fail "hotkeys.lua owns hotkey registration"
+fi
+
+if [ -f "$hotkeys_path" ] && LC_ALL=C grep -Eq 'require\("hotkeys_config"\)|require\('\''hotkeys_config'\''\)' "$hotkeys_path"; then
+  pass "hotkeys.lua loads hotkeys_config"
+else
+  fail "hotkeys.lua loads hotkeys_config"
 fi
 
 bind_hits=$(mktemp "${TMPDIR:-/tmp}/launch-config-bind.XXXXXX") || exit 1
