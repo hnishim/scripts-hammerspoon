@@ -21,12 +21,20 @@ local function cancelReadback()
   pendingReadbackTimer = nil
 end
 local function rounded(value) return math.floor(value + 0.5) end
+local function validNumber(value)
+  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+local function validFrame(frame)
+  if type(frame) ~= "table" then return false end
+  for _, field in ipairs({ "x", "y", "w", "h" }) do
+    if not validNumber(frame[field]) then return false end
+  end
+  return frame.w > 0 and frame.h > 0
+end
 local function makeTarget(frame, layout, currentFrame)
-  if type(frame) ~= "table" then return nil end
-  for _, field in ipairs({ "x", "y", "w", "h" }) do if type(frame[field]) ~= "number" then return nil end end
+  if not validFrame(frame) then return nil end
   if layout.preserveHorizontal then
-    if type(currentFrame) ~= "table" then return nil end
-    for _, field in ipairs({ "x", "y", "w", "h" }) do if type(currentFrame[field]) ~= "number" then return nil end end
+    if not validFrame(currentFrame) then return nil end
   end
   local left, top = rounded(frame.x), rounded(frame.y)
   local right, bottom = rounded(frame.x + frame.w), rounded(frame.y + frame.h)
@@ -41,23 +49,98 @@ local function makeTarget(frame, layout, currentFrame)
   return { x = x, y = y, w = width, h = height }
 end
 local function frameMatches(actual, target)
-  if type(actual) ~= "table" then return false end
-  for _, field in ipairs({ "x", "y", "w", "h" }) do if type(actual[field]) ~= "number" or math.abs(actual[field] - target[field]) > 2 then return false end end
+  if not validFrame(actual) or not validFrame(target) then return false end
+  for _, field in ipairs({ "x", "y", "w", "h" }) do if math.abs(actual[field] - target[field]) > 2 then return false end end
   return true
 end
-local function readback(window, target, operation, attempt)
-  if operation ~= operationSequence then return end
-  local frameOK, frame = pcall(function() return window:frame() end)
-  if frameOK and frameMatches(frame, target) then pendingReadbackTimer = nil; return end
+
+local function sameFrame(first, second)
+  if not validFrame(first) or not validFrame(second) then return false end
+  for _, field in ipairs({ "x", "y", "w", "h" }) do if first[field] ~= second[field] then return false end end
+  return true
+end
+
+local function correctionCandidate(previous, current, target)
+  if not validFrame(previous) or not validFrame(current) then return nil end
+  if sameFrame(previous, current) and (current.w ~= target.w or current.h ~= target.h) then return current end
+  return nil
+end
+
+local function clampCorrectedFrame(frame, screenFrame)
+  if not validFrame(frame) or not validFrame(screenFrame) then return nil end
+  if frame.w > screenFrame.w or frame.h > screenFrame.h then return nil end
+  local right = screenFrame.x + screenFrame.w
+  local bottom = screenFrame.y + screenFrame.h
+  local x = math.max(screenFrame.x, math.min(frame.x, right - frame.w))
+  local y = math.max(screenFrame.y, math.min(frame.y, bottom - frame.h))
+  return { x = x, y = y, w = frame.w, h = frame.h }
+end
+
+local function correctedTarget(screenFrame, layout, requested, observed)
+  if not validFrame(screenFrame) or not validFrame(requested) or not validFrame(observed) then return nil end
+  local left, top = rounded(screenFrame.x), rounded(screenFrame.y)
+  local right, bottom = rounded(screenFrame.x + screenFrame.w), rounded(screenFrame.y + screenFrame.h)
+  local target = { x = requested.x, y = requested.y, w = observed.w, h = observed.h }
+  if layout.preserveHorizontal then
+    target.x = requested.x
+    if layout.anchor == "bl" then target.y = bottom - target.h else target.y = top end
+  elseif layout.anchor == "bl" then
+    target.y = bottom - target.h
+  elseif layout.anchor == "cc" then
+    target.x, target.y = rounded((left + right - target.w) / 2), rounded((top + bottom - target.h) / 2)
+  elseif layout.anchor == "tr" then
+    target.x = right - target.w
+  end
+  return clampCorrectedFrame(target, screenFrame)
+end
+
+local readback
+local function scheduleReadback(window, target, operation, attempt, context)
   if attempt >= 3 then pendingReadbackTimer = nil; showError(); return end
   local delay = attempt == 1 and 0.05 or 0.1
   local timerOK, timer = pcall(function() return hs.timer.doAfter(delay, function()
     if operation ~= operationSequence then return end
     pendingReadbackTimer = nil
-    readback(window, target, operation, attempt + 1)
+    readback(window, target, operation, attempt + 1, context)
   end) end)
   if not timerOK or not timer then pendingReadbackTimer = nil; showError(); return end
   pendingReadbackTimer = timer
+end
+
+local function applyCorrection(window, context)
+  local target = correctedTarget(context.screenFrame, context.layout, context.requested, context.candidate)
+  if not target then pendingReadbackTimer = nil; showError(); return end
+  local setOK = pcall(function() window:setFrame(target, 0) end)
+  if not setOK then pendingReadbackTimer = nil; showError(); return end
+  context.phase = "final"
+  context.finalTarget = target
+  context.finalObservations = {}
+  readback(window, target, context.operation, 1, context)
+end
+
+readback = function(window, target, operation, attempt, context)
+  if operation ~= operationSequence then return end
+  if context.phase == "initial" and context.candidate then
+    applyCorrection(window, context)
+    return
+  end
+  local frameOK, frame = pcall(function() return window:frame() end)
+  if context.phase == "final" then
+    if not frameOK or not validFrame(frame) then pendingReadbackTimer = nil; showError(); return end
+    if not frameMatches(frame, target) then pendingReadbackTimer = nil; showError(); return end
+    local previous = context.finalObservations[#context.finalObservations]
+    context.finalObservations[#context.finalObservations + 1] = frame
+    if previous and sameFrame(previous, frame) then pendingReadbackTimer = nil; return end
+    scheduleReadback(window, target, operation, attempt, context)
+    return
+  end
+  if frameOK and frameMatches(frame, target) then pendingReadbackTimer = nil; return end
+  if context.phase == "initial" and frameOK and validFrame(frame) then
+    local previous = context.observations[#context.observations]
+    context.observations[#context.observations + 1] = frame
+    context.candidate = correctionCandidate(previous, frame, target)
+  end
+  scheduleReadback(window, target, operation, attempt, context)
 end
 local function resizeWindow(layout)
   cancelReadback(); operationSequence = operationSequence + 1
@@ -77,7 +160,15 @@ local function resizeWindow(layout)
   if not target then showError(); return false end
   local setOK = pcall(function() window:setFrame(target, 0) end)
   if not setOK then showError(); return false end
-  readback(window, target, operation, 1)
+  readback(window, target, operation, 1, {
+    operation = operation,
+    phase = "initial",
+    observations = {},
+    candidate = nil,
+    layout = layout,
+    requested = target,
+    screenFrame = frame,
+  })
   return true
 end
 local function moveToPreviousDisplay()

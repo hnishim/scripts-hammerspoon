@@ -33,6 +33,14 @@ local screenSpecs = {
 local readbackFrames = nil
 local readbackMode = nil
 local setFrames = {}
+local setFrameAttempts = 0
+local layoutEvents = {}
+local minimumSizeCorrection = nil
+local correctionWasApplied = false
+local correctiveSetFrameFailure = nil
+local finalReadbackMode = nil
+local finalReadbackFrames = nil
+local finalReadbackActive = false
 local successMessage = "ウィンドウのサイズ変更に成功しました。"
 local raycastRoot = (os.getenv("HOME") or "") .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/raycast"
 local finderExecutable = "/usr/bin/osascript"
@@ -90,6 +98,11 @@ local function frameCopy(frame)
   return { x = frame.x, y = frame.y, w = frame.w, h = frame.h }
 end
 
+local function recordReadback(frame)
+  layoutEvents[#layoutEvents + 1] = { kind = "readback", frame = frameCopy(frame) }
+  return frame
+end
+
 local function currentScreen()
   local spec = screenSpecs[screenIndex]
   return {
@@ -135,21 +148,33 @@ local function frameFromWindow(isInitialLookup)
     initialWindowFrameValue = nil
     return value
   end
+  if not isInitialLookup and finalReadbackActive then
+    if finalReadbackMode == "error" then error("final frame readback failure") end
+    if finalReadbackMode == "nil" then return nil end
+    if finalReadbackFrames and #finalReadbackFrames > 0 then
+      local frame = table.remove(finalReadbackFrames, 1)
+      if frame == "error" then error("final frame readback failure") end
+      if frame == "nil" then return nil end
+      if frame == "current" then return recordReadback(currentFrame) end
+      return recordReadback(frame)
+    end
+    return recordReadback(currentFrame)
+  end
   if not isInitialLookup and readbackFailure == "error" then error("frame readback failure") end
   if not isInitialLookup and readbackFailure == "nil" then return nil end
   if not isInitialLookup and readbackMode then
     local frame = frameCopy(currentFrame)
     frame[readbackMode.field] = frame[readbackMode.field] + readbackMode.delta
-    return frame
+    return recordReadback(frame)
   end
   if not isInitialLookup and readbackFrames and #readbackFrames > 0 then
     local frame = table.remove(readbackFrames, 1)
     if frame == "error" then error("frame readback failure") end
-    if frame == "current" then return currentFrame end
-    if frame == "boundary" then return { x = currentFrame.x + 2, y = currentFrame.y, w = currentFrame.w, h = currentFrame.h } end
-    return frame
+    if frame == "current" then return recordReadback(currentFrame) end
+    if frame == "boundary" then return recordReadback({ x = currentFrame.x + 2, y = currentFrame.y, w = currentFrame.w, h = currentFrame.h }) end
+    return recordReadback(frame)
   end
-  return currentFrame
+  return recordReadback(currentFrame)
 end
 
 _G.hs = {
@@ -196,9 +221,28 @@ _G.hs = {
         end)(),
         setFrame = function(_, frame, duration)
           assertEqual(duration, 0, "setFrame duration")
+          setFrameAttempts = setFrameAttempts + 1
           if setFrameFailure then error("setFrame failure") end
+          if correctiveSetFrameFailure and correctionWasApplied then error("corrective setFrame failure") end
+          local eventRole = correctionWasApplied and "corrective" or (minimumSizeCorrection and "initial" or "normal")
+          if minimumSizeCorrection then
+            local correction = minimumSizeCorrection
+            minimumSizeCorrection = nil
+            correctionWasApplied = true
+            currentFrame = frameCopy(frame)
+            currentFrame.w = correction.w or currentFrame.w
+            currentFrame.h = correction.h or currentFrame.h
+            currentFrame.x = correction.x or currentFrame.x
+            currentFrame.y = correction.y or currentFrame.y
+          else
+            currentFrame = frameCopy(frame)
+            if correctionWasApplied then
+              finalReadbackActive = true
+              correctionWasApplied = false
+            end
+          end
           setFrames[#setFrames + 1] = frameCopy(frame)
-          currentFrame = frameCopy(frame)
+          layoutEvents[#layoutEvents + 1] = { kind = "setFrame", role = eventRole, frame = frameCopy(frame) }
         end,
         moveToScreen = function(_, target, noResize, ensureInScreenBounds, duration)
           assert(not moveScreenFailure, "moveToScreen failure")
@@ -317,6 +361,79 @@ local function expectedVerticalFrame(before, heightPercent, anchor)
   return { x = before.x, y = y, w = before.w, h = h }
 end
 
+local function configureMinimumCorrection(correction)
+  minimumSizeCorrection = correction
+  correctionWasApplied = false
+  finalReadbackActive = false
+  finalReadbackMode = nil
+  finalReadbackFrames = nil
+  layoutEvents = {}
+  readbackFrames, readbackMode, readbackCalls = nil, nil, 0
+end
+
+local function configureFinalReadback(mode, frames)
+  finalReadbackMode = mode
+  finalReadbackFrames = frames
+end
+
+local function clearCorrectionMock()
+  minimumSizeCorrection = nil
+  correctionWasApplied = false
+  correctiveSetFrameFailure = nil
+  finalReadbackMode = nil
+  finalReadbackFrames = nil
+  finalReadbackActive = false
+end
+
+local function assertContainedBy(frame, screen, message)
+  assert(frame.x >= screen.x and frame.y >= screen.y, message .. " origin")
+  assert(frame.x + frame.w <= screen.x + screen.w, message .. " right edge")
+  assert(frame.y + frame.h <= screen.y + screen.h, message .. " bottom edge")
+end
+
+local function assertStableCorrectionObservation(expectedObserved, message)
+  local initialSetIndex
+  local correctiveSetIndex
+  for index, event in ipairs(layoutEvents) do
+    if event.kind == "setFrame" and event.role == "initial" then
+      initialSetIndex = index
+    elseif event.kind == "setFrame" and event.role == "corrective" then
+      correctiveSetIndex = index
+      break
+    end
+  end
+  assert(initialSetIndex, message .. " has initial setFrame event")
+  assert(correctiveSetIndex, message .. " has corrective setFrame event")
+  local previousReadback
+  for index = initialSetIndex + 1, correctiveSetIndex - 1 do
+    local event = layoutEvents[index]
+    if event.kind == "readback" then
+      if previousReadback then
+        local matches = pcall(assertExactFrame, previousReadback.frame, expectedObserved, message .. " first stable observation")
+        local secondMatches = pcall(assertExactFrame, event.frame, expectedObserved, message .. " second stable observation")
+        if matches and secondMatches then return end
+      end
+      previousReadback = event
+    end
+  end
+  error(message .. " does not observe the same corrected frame twice before corrective setFrame")
+end
+
+local function assertCorrectedLayout(key, before, correction, expectedObserved, expectedFinal, message)
+  currentFrame = frameCopy(before)
+  configureMinimumCorrection(correction)
+  local priorAlerts, priorFrames = #alerts, #setFrames
+  press({ "cmd", "ctrl" }, key)
+  while activeTimerCount() > 0 do fireTimer(latestTimer) end
+  assertEqual(#alerts, priorAlerts, message .. " has no failure alert")
+  assert(#setFrames >= priorFrames + 2, message .. " performs corrective setFrame")
+  assertStableCorrectionObservation(expectedObserved, message)
+  assertTolerantFrame(setFrames[#setFrames], expectedFinal, message .. " final target")
+  assertTolerantFrame(currentFrame, expectedFinal, message .. " final frame")
+  assertEqual(activeTimerCount(), 0, message .. " leaves no timer")
+  clearCorrectionMock()
+end
+
 local function assertVerticalLayout(key, before, heightPercent, anchor)
   currentFrame = frameCopy(before)
   local beforeSetFrames = #setFrames
@@ -425,18 +542,148 @@ screenFrame = { x = 10.25, y = 20.75, w = 1001.5, h = 777.25 }
 assertLayout("r", 0.5, 1, "tr")
 assertExactFrame(setFrames[#setFrames], expectedFrame(0.5, 1, "tr"), "non-integer screen rounded target")
 
+-- A window may apply a stable minimum-size correction after the requested
+-- frame is set. The correction is accepted only after repeated observations,
+-- then the requested anchor is recalculated and the corrected frame is set.
+screenFrame = { x = 0, y = 30, w = 1440, h = 870 }
+currentFrame = { x = 300, y = 100, w = 700, h = 500 }
+windowManagement.run("full")
+assertCorrectedLayout("n", { x = 300, y = 100, w = 700, h = 500 }, { h = 600 },
+  { x = 300, y = 30, w = 700, h = 600 }, { x = 300, y = 30, w = 700, h = 600 },
+  "stable top minimum-height correction")
+windowManagement.run("full")
+assertCorrectedLayout("t", { x = 300, y = 100, w = 700, h = 500 }, { h = 600 },
+  { x = 300, y = 465, w = 700, h = 600 }, { x = 300, y = 300, w = 700, h = 600 },
+  "stable bottom minimum-height correction")
+
+windowManagement.run("full")
+assertCorrectedLayout("g", { x = 300, y = 100, w = 700, h = 500 }, { w = 900 },
+  { x = 0, y = 30, w = 900, h = 870 }, { x = 0, y = 30, w = 900, h = 870 },
+  "stable left minimum-width correction")
+windowManagement.run("full")
+assertCorrectedLayout("c", { x = 300, y = 100, w = 700, h = 500 }, { w = 900 },
+  { x = 360, y = 30, w = 900, h = 870 }, { x = 270, y = 30, w = 900, h = 870 },
+  "stable center minimum-width correction")
+windowManagement.run("full")
+assertCorrectedLayout("r", { x = 300, y = 100, w = 700, h = 500 }, { w = 900 },
+  { x = 720, y = 30, w = 900, h = 870 }, { x = 540, y = 30, w = 900, h = 870 },
+  "stable right minimum-width correction")
+
+windowManagement.run("full")
+assertCorrectedLayout("r", { x = 300, y = 100, w = 700, h = 500 }, { w = 1000 },
+  { x = 720, y = 30, w = 1000, h = 870 }, { x = 440, y = 30, w = 1000, h = 870 },
+  "out-of-bounds right correction is re-anchored")
+assertContainedBy(currentFrame, screenFrame, "out-of-bounds right correction final frame is contained")
+
+-- A stable correction that cannot fit on the screen remains an explicit
+-- failure, while changing observations are not mistaken for a stable clamp.
+windowManagement.run("full")
+currentFrame = { x = 300, y = 100, w = 700, h = 500 }
+configureMinimumCorrection({ h = 1000 })
+local impossibleAlerts, impossibleFrames = #alerts, #setFrames
+press({ "cmd", "ctrl" }, "t")
+while activeTimerCount() > 0 do fireTimer(latestTimer) end
+assertFailureAlert(impossibleAlerts, "minimum-height correction larger than screen")
+assertEqual(#setFrames, impossibleFrames + 1, "impossible correction does not perform corrective setFrame")
+assertEqual(activeTimerCount(), 0, "impossible correction leaves no timer")
+clearCorrectionMock()
+
+local function assertInitialCorrectionFailure(message, configureFailure)
+  windowManagement.run("full")
+  currentFrame = { x = 300, y = 100, w = 700, h = 500 }
+  configureMinimumCorrection({ h = 600 })
+  configureFailure()
+  local priorAlerts, priorFrames = #alerts, #setFrames
+  press({ "cmd", "ctrl" }, "n")
+  while activeTimerCount() > 0 do fireTimer(latestTimer) end
+  assertFailureAlert(priorAlerts, message .. " notification")
+  assertEqual(#setFrames, priorFrames + 1, message .. " only performs initial setFrame")
+  assertEqual(activeTimerCount(), 0, message .. " leaves no timer")
+  clearCorrectionMock()
+end
+
+assertInitialCorrectionFailure("unstable minimum-size correction", function()
+  setReadback({
+    { x = 300, y = 30, w = 700, h = 600 },
+    { x = 300, y = 31, w = 700, h = 600 },
+    { x = 300, y = 32, w = 700, h = 600 },
+  })
+end)
+
+local function assertCorrectiveSetFrameFailure()
+  windowManagement.run("full")
+  currentFrame = { x = 300, y = 100, w = 700, h = 500 }
+  configureMinimumCorrection({ h = 600 })
+  correctiveSetFrameFailure = "error"
+  local priorAlerts, priorFrames, priorAttempts = #alerts, #setFrames, setFrameAttempts
+  press({ "cmd", "ctrl" }, "n")
+  while activeTimerCount() > 0 do fireTimer(latestTimer) end
+  correctiveSetFrameFailure = nil
+  assertFailureAlert(priorAlerts, "corrective setFrame exception notification")
+  assertEqual(#setFrames, priorFrames + 1, "corrective setFrame exception records only initial setFrame")
+  assert(setFrameAttempts >= priorAttempts + 2, "corrective setFrame exception reaches second setFrame")
+  assertEqual(activeTimerCount(), 0, "corrective setFrame exception leaves no timer")
+  clearCorrectionMock()
+end
+assertCorrectiveSetFrameFailure()
+
+local function assertFinalReadbackFailure(mode, frames, message)
+  windowManagement.run("full")
+  currentFrame = { x = 300, y = 100, w = 700, h = 500 }
+  configureMinimumCorrection({ h = 600 })
+  configureFinalReadback(mode, frames)
+  local priorAlerts, priorFrames = #alerts, #setFrames
+  press({ "cmd", "ctrl" }, "n")
+  while activeTimerCount() > 0 do fireTimer(latestTimer) end
+  assertFailureAlert(priorAlerts, message .. " notification")
+  assertEqual(#setFrames, priorFrames + 2, message .. " reaches corrective setFrame")
+  assertEqual(activeTimerCount(), 0, message .. " leaves no timer")
+  clearCorrectionMock()
+end
+
+local function assertFinalReadbackBoundarySuccess()
+  windowManagement.run("full")
+  currentFrame = { x = 300, y = 100, w = 700, h = 500 }
+  configureMinimumCorrection({ h = 600 })
+  configureFinalReadback(nil, {
+    { x = 302, y = 28, w = 698, h = 602 },
+  })
+  local priorAlerts, priorFrames = #alerts, #setFrames
+  press({ "cmd", "ctrl" }, "n")
+  while activeTimerCount() > 0 do fireTimer(latestTimer) end
+  assertEqual(#alerts, priorAlerts, "final readback boundary success has no alert")
+  assertEqual(#setFrames, priorFrames + 2, "final readback boundary success reaches corrective setFrame")
+  assertEqual(activeTimerCount(), 0, "final readback boundary success leaves no timer")
+  clearCorrectionMock()
+end
+
+assertFinalReadbackBoundarySuccess()
+assertFinalReadbackFailure("nil", nil, "final readback nil")
+assertFinalReadbackFailure("error", nil, "final readback exception")
+assertFinalReadbackFailure(nil, {
+  { x = 300, y = 31, w = 700, h = 600 },
+  { x = 300, y = 32, w = 700, h = 600 },
+  { x = 300, y = 33, w = 700, h = 600 },
+}, "final readback instability")
+assertFinalReadbackFailure(nil, {
+  { x = 303, y = 30, w = 700, h = 600 },
+  { x = 303, y = 30, w = 700, h = 600 },
+  { x = 303, y = 30, w = 700, h = 600 },
+}, "final readback beyond tolerance")
+
 -- Readback tolerance is independent from exact setFrame target equality.
 setReadback(nil)
 assertNoAlert(function() press({ "cmd", "ctrl" }, "t") end, "immediate readback success")
 assertEqual(readbackCalls, 1, "immediate readback attempt count")
 setReadback({ { x = 0, y = 0, w = 1, h = 1 }, "current" })
+local laterReadbackAlerts = #alerts
 press({ "cmd", "ctrl" }, "t")
 assertEqual(readbackCalls, 1, "later readback immediate attempt count")
 local laterTimer = latestTimer
 assertEqual(laterTimer.delay, 0.05, "later readback delay")
 fireTimer(laterTimer)
 assertEqual(readbackCalls, 2, "later readback second attempt count")
-assertEqual(#alerts, 0, "later readback success has no alert")
+assertEqual(#alerts, laterReadbackAlerts, "later readback success has no alert")
 assertEqual(activeTimerCount(), 0, "later readback leaves no timer")
 for _, field in ipairs({ "x", "y", "w", "h" }) do
   assertReadbackTolerance(field, 2)
