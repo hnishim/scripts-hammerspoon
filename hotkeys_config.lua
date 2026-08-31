@@ -14,6 +14,7 @@ return {
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "d", action = { type = "app", app = "Cogito" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "e", action = { type = "app", app = "Cursor" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "f", action = { type = "app", app = "Finder" } },
+  { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "g", action = { type = "url", command = "google" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "i", action = { type = "app", app = "ChatGPT" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "j", action = { type = "app", app = "Dictionaries" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "k", action = { type = "app", app = "Linear" } },
@@ -34,7 +35,7 @@ return {
   -- AI commands
   {
     modifiers = { "cmd", "alt", "shift" },
-    key = "B",
+    key = "b",
     action = {
       type = "ai",
       promptPath = promptDir .. "bio-ai_expert.md",
@@ -44,7 +45,7 @@ return {
   },
   {
     modifiers = { "cmd", "alt", "shift" },
-    key = "R",
+    key = "r",
     action = {
       type = "ai",
       promptPath = promptDir .. "review-text_compact.md",
@@ -54,7 +55,7 @@ return {
   },
   {
     modifiers = { "cmd", "alt", "shift" },
-    key = "T",
+    key = "t",
     action = {
       type = "ai",
       promptPath = promptDir .. "translate.md",
@@ -64,8 +65,7 @@ return {
   },
 
   -- URL commands
-  { modifiers = { "cmd", "alt", "shift" }, key = "G", action = { type = "url", command = "google" } },
-  { modifiers = { "cmd", "alt", "shift" }, key = "J", action = { type = "url", command = "dictionary" } },
+  { modifiers = { "cmd", "alt", "shift" }, key = "j", action = { type = "url", command = "dictionary" } },
 
   -- Utility scripts
   {
@@ -100,5 +100,5 @@ return {
   { modifiers = { "cmd", "ctrl" }, key = "f", action = { type = "window", command = "full" } },
 
   -- Previous display
-  { modifiers = { "cmd", "ctrl" }, key = "P", action = { type = "window", command = "previous-display" } },
+  { modifiers = { "cmd", "ctrl" }, key = "p", action = { type = "window", command = "previous-display" } },
 }
