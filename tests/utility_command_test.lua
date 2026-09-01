@@ -47,6 +47,22 @@ local finderExecutable = "/usr/bin/osascript"
 local finderScript = raycastRoot .. "/two-panes-finder.applescript"
 local titleCaseExecutable = "/bin/bash"
 local titleCaseScript = raycastRoot .. "/title-case-chicago.sh"
+local titleCasePythonScript = raycastRoot .. "/title-case-chicago.py"
+
+local realIoOpen = io.open
+local function readRealFile(path)
+  local handle = realIoOpen(path, "r")
+  assert(handle, "expected readable file: " .. path)
+  local contents = handle:read("*a")
+  handle:close()
+  return contents
+end
+
+local titleCaseShellContents = readRealFile(titleCaseScript)
+assert(titleCasePythonScript:match("^(.+)/[^/]+$") == titleCaseScript:match("^(.+)/[^/]+$"),
+  "Title Case shell and Python scripts must share a directory")
+assert(titleCaseShellContents:find("SCRIPT_DIR/title-case-chicago.py", 1, true),
+  "Title Case shell script must pass SCRIPT_DIR/title-case-chicago.py to Python")
 
 local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
@@ -861,10 +877,12 @@ assertTaskCompletion("finder success", finderExecutable, finderScript, 0)
 assertTaskCompletion("finder failure", finderExecutable, finderScript, 7)
 assertTaskCompletion("title case success", titleCaseExecutable, titleCaseScript, 0)
 assertTaskCompletion("title case failure", titleCaseExecutable, titleCaseScript, 7)
-
 local beforeMissingScript = taskSequence
-utilityCommand.run(titleCaseExecutable, raycastRoot .. "/missing-title-case-chicago.sh")
+local beforeMissingAlerts = #alerts
+local missingScriptResult = utilityCommand.run(titleCaseExecutable, raycastRoot .. "/missing-title-case-chicago.sh")
+assertEqual(missingScriptResult, false, "missing script returns false")
 assertEqual(taskSequence, beforeMissingScript, "missing script does not create a task")
+assertEqual(#alerts, beforeMissingAlerts, "missing script does not alert")
 
 local beforeMissingExecutable = taskSequence
 utilityCommand.run("/missing/raycast-executable", titleCaseScript)
