@@ -1,10 +1,17 @@
 local bindCalls = {}
 local handles = {}
 local deletedHandles = {}
+local eventTapCalls = {}
 local actionCalls = {}
 local alertCalls = {}
 local bindAttempts = 0
 local failAtBind
+local failEventTapNew = false
+local failEventTapStart = false
+local frontmostName = "Finder"
+local pasteboardWrites = 0
+local keyStrokes = 0
+local fileNameCopyStopCalls = 0
 
 local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
@@ -54,7 +61,13 @@ local function clearActionCalls()
 end
 
 local function actionStub(name)
-  return { run = function(...) recordAction(name, ...) end }
+  local stub = { run = function(...) recordAction(name, ...) end }
+  if name == "file_name_copy" then
+    function stub:stop()
+      fileNameCopyStopCalls = fileNameCopyStopCalls + 1
+    end
+  end
+  return stub
 end
 
 _G.hs = {
@@ -81,9 +94,43 @@ _G.hs = {
       return handle
     end,
   },
+  eventtap = {
+    event = { types = { keyDown = 10 } },
+    keyStroke = function() keyStrokes = keyStrokes + 1 end,
+    new = function(types, callback)
+      if failEventTapNew then error("injected hs.eventtap.new failure") end
+      local tap = { types = types, callback = callback, started = false, stopped = false, deleted = false }
+      function tap:start()
+        self.started = true
+        if failEventTapStart then error("injected hs.eventtap start failure") end
+        return self
+      end
+      function tap:stop()
+        self.stopped = true
+        self.started = false
+      end
+      function tap:delete()
+        self.deleted = true
+        self.started = false
+      end
+      eventTapCalls[#eventTapCalls + 1] = tap
+      return tap
+    end,
+  },
   alert = {
     show = function(message, seconds)
       alertCalls[#alertCalls + 1] = { message = message, seconds = seconds }
+    end,
+  },
+  application = {
+    frontmostApplication = function()
+      return { name = function() return frontmostName end }
+    end,
+  },
+  pasteboard = {
+    setContents = function()
+      pasteboardWrites = pasteboardWrites + 1
+      return true
     end,
   },
 }
@@ -94,6 +141,7 @@ package.preload["actions.app_launcher"] = function() return actionStub("app") en
 package.preload["actions.window_management"] = function() return actionStub("window") end
 package.preload["actions.utility_command"] = function() return actionStub("utility") end
 package.preload["actions.url_commands"] = function() return actionStub("url") end
+package.preload["actions.file_name_copy"] = function() return actionStub("file_name_copy") end
 package.preload["components.hud"] = function() return {} end
 
 local home = os.getenv("HOME") or ""
@@ -157,6 +205,10 @@ expected[#expected + 1] = {
 }
 local expectedCount = #expected
 assertEqual(expectedCount, 32, "test expectation contains the current 32 bindings")
+local expectedFileNameCopy = {
+  modifiers = { "cmd", "shift" }, key = "c",
+  action = { type = "file_name_copy" },
+}
 
 local expectedBySignature = {}
 for _, binding in ipairs(expected) do
@@ -248,12 +300,18 @@ end
 
 local config = require("hotkeys_config")
 assert(type(config) == "table", "hotkeys_config must return the bindings array")
-assertEqual(#config, expectedCount, "hotkeys_config contains the expected number of bindings")
+assertEqual(#config, expectedCount + 1, "hotkeys_config contains regular bindings plus the eventtap action")
 local configSignatures = {}
+local fileNameCopyConfig
 for index, binding in ipairs(config) do
   assert(type(binding) == "table", "config binding " .. index .. " must be a table")
   local key = signature(binding.modifiers, binding.key)
   local expectedBinding = expectedBySignature[key]
+  if binding.action and binding.action.type == "file_name_copy" then
+    assert(fileNameCopyConfig == nil, "config contains only one file_name_copy action")
+    fileNameCopyConfig = binding
+    expectedBinding = expectedFileNameCopy
+  end
   assert(expectedBinding, "config binding " .. index .. " is not in the approved fixture: " .. key)
   assert(configSignatures[key] == nil, "config binding " .. index .. " duplicates " .. key)
   configSignatures[key] = true
@@ -262,6 +320,10 @@ end
 for key in pairs(expectedBySignature) do
   assert(configSignatures[key], "approved config binding was not found: " .. key)
 end
+assert(fileNameCopyConfig, "config contains the file_name_copy eventtap action")
+assertEqual(signature(fileNameCopyConfig.modifiers, fileNameCopyConfig.key), "cmd+shift:c",
+  "file_name_copy eventtap modifier/key")
+assertEqual(fileNameCopyConfig.action.type, expectedFileNameCopy.action.type, "file_name_copy action type")
 
 local hotkeys = require("hotkeys")
 assert(type(hotkeys.start) == "function", "hotkeys.start() must be exported")
@@ -269,8 +331,11 @@ assert(type(hotkeys.getLastError) == "function", "hotkeys.getLastError() must be
 local firstStartOK, firstStartResult = pcall(hotkeys.start)
 assertEqual(firstStartOK, true, "first hotkeys start completes without error")
 assertEqual(firstStartResult, true, "first hotkeys start succeeds")
-assertEqual(#bindCalls, expectedCount, "first start registers the expected number of hotkeys")
+assertEqual(#bindCalls, expectedCount, "first start registers 32 regular hotkeys")
 assertEqual(bindAttempts, expectedCount, "first start attempts the expected number of binds")
+assertEqual(#eventTapCalls, 1, "first start registers one event tap")
+assertEqual(eventTapCalls[1].started, true, "first event tap starts")
+assertTableEqual(eventTapCalls[1].types, { hs.eventtap.event.types.keyDown }, "event tap listens only for keyDown")
 assertRegisteredBindings(expected, 1)
 assertCallbacks(expected, "initial registered bindings")
 
@@ -281,11 +346,61 @@ assertEqual(reloadStartOK, true, "reload hotkeys completes without error")
 assertEqual(reloadStartResult, true, "reload hotkeys succeeds")
 assertEqual(#bindCalls, expectedCount * 2, "reload registers a fresh set of hotkeys")
 assertEqual(#deletedHandles, expectedCount, "reload deletes every previous hotkey handle")
+assertEqual(#eventTapCalls, 2, "reload registers one fresh event tap")
+assertEqual(fileNameCopyStopCalls, 1, "reload stops the previous file_name_copy action")
+assertEqual(eventTapCalls[1].stopped, true, "reload stops the previous event tap")
+assertEqual(eventTapCalls[1].deleted, true, "reload deletes the previous event tap")
+assertEqual(eventTapCalls[2].started, true, "reload starts the fresh event tap")
 for index, handle in ipairs(firstHandles) do
   assertEqual(handle.deleted, true, string.format("first-start handle %d is deleted", index))
 end
 assertRegisteredBindings(expected, expectedCount + 1)
 assertCallbacks(expected, "reloaded registered bindings")
+
+local function event(modifiers, keyCode, character)
+  local flags = {}
+  for _, modifier in ipairs(modifiers) do flags[modifier] = true end
+  return {
+    getType = function() return hs.eventtap.event.types.keyDown end,
+    getFlags = function() return flags end,
+    getKeyCode = function() return keyCode end,
+    getCharacters = function() return character end,
+  }
+end
+
+clearActionCalls()
+local function assertTargetEventConsumed(appName)
+  frontmostName = appName
+  local beforeAlerts, beforePasteboardWrites, beforeKeyStrokes = #alertCalls, pasteboardWrites, keyStrokes
+  assertEqual(eventTapCalls[2].callback(event({ "cmd", "shift" }, 8, "c")), true,
+    appName .. " exact key event is consumed")
+  assertEqual(#actionCalls, 1, appName .. " exact key event dispatches exactly once")
+  assertEqual(actionCalls[1].name, "file_name_copy", appName .. " dispatches file_name_copy")
+  assertEqual(#actionCalls[1].args, 0, appName .. " dispatch has no synthetic arguments")
+  assertEqual(#alertCalls, beforeAlerts, appName .. " exact event does not alert")
+  assertEqual(pasteboardWrites, beforePasteboardWrites, appName .. " exact event does not write pasteboard")
+  assertEqual(keyStrokes, beforeKeyStrokes, appName .. " exact event does not send pseudo-keys")
+  clearActionCalls()
+end
+
+assertTargetEventConsumed("Finder")
+assertTargetEventConsumed("Cursor")
+
+local function assertEventPasses(appName, modifiers, keyCode, character, description)
+  frontmostName = appName
+  local beforeAlerts, beforePasteboardWrites, beforeKeyStrokes = #alertCalls, pasteboardWrites, keyStrokes
+  assertEqual(eventTapCalls[2].callback(event(modifiers, keyCode, character)), false, description .. " passes through")
+  assertEqual(#actionCalls, 0, description .. " does not dispatch")
+  assertEqual(#alertCalls, beforeAlerts, description .. " does not alert")
+  assertEqual(pasteboardWrites, beforePasteboardWrites, description .. " does not write pasteboard")
+  assertEqual(keyStrokes, beforeKeyStrokes, description .. " does not send pseudo-keys")
+end
+
+assertEventPasses("Finder", { "cmd", "alt", "shift" }, 8, "c", "extra modifier event")
+assertEventPasses("Finder", { "cmd", "ctrl", "shift" }, 8, "c", "target-app cmd+ctrl+shift+c event")
+assertEventPasses("Cursor", { "cmd", "ctrl", "shift" }, 8, "c", "Cursor target-app cmd+ctrl+shift+c event")
+assertEventPasses("Safari", { "cmd", "shift" }, 8, "c", "non-target app event")
+assertEventPasses("Cursor", { "cmd", "shift" }, 9, "v", "non-target key event")
 
 -- Change only configuration data: modifier/key and action targets are all observed
 -- through the dispatcher without changing production action code.
@@ -305,6 +420,7 @@ local windowIndex = configIndexFor(expected[22])
 local urlIndex = configIndexFor(expected[28])
 local previousIndex = configIndexFor(expected[30])
 local utilityIndex = configIndexFor(expected[31])
+local fileNameCopyIndex = configIndexFor(expectedFileNameCopy)
 
 local changedAI = copyBinding(config[aiIndex])
 changedAI.modifiers = { "cmd", "shift" }
@@ -330,7 +446,8 @@ config[utilityIndex] = changedUtility
 local changedStartOK, changedStartResult = pcall(hotkeys.start)
 assertEqual(changedStartOK, true, "configuration-only changes reload without error")
 assertEqual(changedStartResult, true, "configuration-only changes reload successfully")
-assertEqual(#bindCalls, expectedCount * 3, "configuration-only changes register a fresh complete set")
+assertEqual(#bindCalls, expectedCount * 3, "configuration-only changes register 32 regular hotkeys")
+assertEqual(#eventTapCalls, 3, "configuration-only changes register one event tap")
 local changedExpected = {}
 for index, binding in ipairs(expected) do changedExpected[index] = binding end
 changedExpected[1] = changedAI
@@ -365,12 +482,14 @@ local restoredStartOK, restoredStartResult = pcall(hotkeys.start)
 assertEqual(restoredStartOK, true, "restored configuration reloads without error")
 assertEqual(restoredStartResult, true, "restored configuration reloads successfully")
 assertEqual(#bindCalls, expectedCount * 4, "restored configuration registers a complete set")
+assertEqual(#eventTapCalls, 4, "restored configuration registers one event tap")
 assertRegisteredBindings(expected, expectedCount * 3 + 1)
 
 local function assertInjectedConfigurationRejected(name, injectedValue)
   local beforeBindCalls = #bindCalls
   local beforeBindAttempts = bindAttempts
   local beforeDeletedHandles = #deletedHandles
+  local beforeEventTapCalls = #eventTapCalls
   local beforeHandles = activeSnapshot()
   local savedHotkeysLoaded = package.loaded["hotkeys"]
   local savedHotkeysPreload = package.preload["hotkeys"]
@@ -425,6 +544,7 @@ local function assertInvalidConfiguration(name, applyInvalidChange)
   local beforeBindCalls = #bindCalls
   local beforeBindAttempts = bindAttempts
   local beforeDeletedHandles = #deletedHandles
+  local beforeEventTapCalls = #eventTapCalls
   local beforeAlerts = #alertCalls
   local beforeHandles = activeSnapshot()
   applyInvalidChange()
@@ -440,6 +560,7 @@ local function assertInvalidConfiguration(name, applyInvalidChange)
   assertEqual(#bindCalls, beforeBindCalls, "invalid " .. name .. " does not bind")
   assertEqual(bindAttempts, beforeBindAttempts, "invalid " .. name .. " is rejected before hs.hotkey.bind")
   assertEqual(#deletedHandles, beforeDeletedHandles, "invalid " .. name .. " does not delete existing handles")
+  assertEqual(#eventTapCalls, beforeEventTapCalls, "invalid " .. name .. " does not register an event tap")
   assertActiveSnapshotUnchanged(beforeHandles, "invalid " .. name .. " preserves existing handles")
 end
 
@@ -493,6 +614,17 @@ for _, testCase in ipairs(invalidCases) do
 end
 for index, binding in ipairs(originalBindings) do config[index] = binding end
 
+-- One representative malformed file_name_copy binding is enough to cover the
+-- eventtap action's validation boundary; detailed field permutations belong to
+-- the generic binding validator's tests above.
+for index, binding in ipairs(originalBindings) do config[index] = binding end
+assertInvalidConfiguration("file_name_copy missing action", function()
+  local binding = copyBinding(config[fileNameCopyIndex])
+  binding.action = nil
+  config[fileNameCopyIndex] = binding
+end)
+for index, binding in ipairs(originalBindings) do config[index] = binding end
+
 local function assertInvalidWithoutNotificationAPI()
   local beforeBindCalls = #bindCalls
   local beforeBindAttempts = bindAttempts
@@ -520,6 +652,44 @@ local function assertInvalidWithoutNotificationAPI()
 end
 
 assertInvalidWithoutNotificationAPI()
+
+local function assertFailedRegistrationCleaned(tapStart, message)
+  local beforeBindCount = #bindCalls
+  local beforeTapCount = #eventTapCalls
+  failEventTapNew = not tapStart
+  failEventTapStart = tapStart
+  local ok, result = pcall(hotkeys.start)
+  failEventTapNew = false
+  failEventTapStart = false
+  assertEqual(ok, true, message .. " is handled without raising")
+  assertEqual(result, false, message .. " is rejected")
+  for index = beforeBindCount + 1, #bindCalls do
+    assertEqual(bindCalls[index].deleted, true, message .. " deletes regular handle " .. index)
+  end
+  assertEqual(countEntries(handles), 0, message .. " leaves no regular handle active")
+  if tapStart then
+    assertEqual(#eventTapCalls, beforeTapCount + 1, message .. " creates one tap before start failure")
+    local tap = eventTapCalls[#eventTapCalls]
+    assertEqual(tap.stopped, true, message .. " stops the failed tap")
+    assertEqual(tap.deleted, true, message .. " deletes the failed tap")
+  else
+    assertEqual(#eventTapCalls, beforeTapCount, message .. " creates no tap after new failure")
+  end
+end
+
+assertFailedRegistrationCleaned(false, "eventtap.new failure")
+local recoveredAfterNewFailureOK, recoveredAfterNewFailureResult = pcall(hotkeys.start)
+assertEqual(recoveredAfterNewFailureOK, true, "start recovers after eventtap.new failure")
+assertEqual(recoveredAfterNewFailureResult, true, "start succeeds after eventtap.new failure")
+assertEqual(#bindCalls, expectedCount * 6, "recovery after eventtap.new failure binds 32 regular hotkeys")
+assertEqual(#eventTapCalls, 5, "recovery after eventtap.new failure registers one event tap")
+
+assertFailedRegistrationCleaned(true, "eventtap start failure")
+local recoveredAfterStartFailureOK, recoveredAfterStartFailureResult = pcall(hotkeys.start)
+assertEqual(recoveredAfterStartFailureOK, true, "start recovers after eventtap start failure")
+assertEqual(recoveredAfterStartFailureResult, true, "start succeeds after eventtap start failure")
+assertEqual(#bindCalls, expectedCount * 8, "recovery after eventtap start failure binds 32 regular hotkeys")
+assertEqual(#eventTapCalls, 7, "recovery after eventtap start failure registers one event tap")
 
 -- A valid configuration may bind partially, but every newly returned handle is
 -- cleaned up and no partial handle remains active after a bind failure.

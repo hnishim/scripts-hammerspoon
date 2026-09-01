@@ -3,9 +3,11 @@ local appLauncher = require("actions.app_launcher")
 local windowManagement = require("actions.window_management")
 local utilityCommand = require("actions.utility_command")
 local urlCommands = require("actions.url_commands")
+local fileNameCopy = require("actions.file_name_copy")
 
 local M = {}
 local handles = {}
+local fileNameCopyEventTap
 local lastError
 
 local aiModes = { display = true, replace = true }
@@ -105,6 +107,7 @@ local function validateAction(action, bindingIndex)
     end
     return true
   end
+  if action.type == "file_name_copy" then return true end
   return false, prefix .. ".type is unknown"
 end
 
@@ -156,6 +159,49 @@ local function callbackFor(action)
   return function() return dispatch(action) end
 end
 
+local function frontmostApplicationName()
+  if type(hs) ~= "table" or type(hs.application) ~= "table"
+      or type(hs.application.frontmostApplication) ~= "function" then
+    return nil
+  end
+  local appOK, app = pcall(hs.application.frontmostApplication)
+  if not appOK or not app or type(app.name) ~= "function" then return nil end
+  local nameOK, name = pcall(app.name, app)
+  if not nameOK then return nil end
+  return name
+end
+
+local function exactFileNameCopyModifiers(flags)
+  if type(flags) ~= "table" or flags.cmd ~= true or flags.shift ~= true then return false end
+  for modifier, pressed in pairs(flags) do
+    if pressed and modifier ~= "cmd" and modifier ~= "shift" then return false end
+  end
+  return true
+end
+
+local function fileNameCopyEventCallback(event)
+  if not event or type(event.getType) ~= "function"
+      or type(event.getFlags) ~= "function"
+      or type(event.getKeyCode) ~= "function" then
+    return false
+  end
+  local typeOK, eventType = pcall(event.getType, event)
+  local keyOK, keyCode = pcall(event.getKeyCode, event)
+  local flagsOK, flags = pcall(event.getFlags, event)
+  if not typeOK or not keyOK or not flagsOK
+      or eventType ~= hs.eventtap.event.types.keyDown
+      or keyCode ~= 8
+      or not exactFileNameCopyModifiers(flags) then
+    return false
+  end
+  local appName = frontmostApplicationName()
+  if appName ~= "Finder" and appName ~= "Cursor" then
+    return false
+  end
+  pcall(fileNameCopy.run)
+  return true
+end
+
 local function hsHotkeyBindAvailable()
   return type(hs) == "table"
     and type(hs.hotkey) == "table"
@@ -171,25 +217,58 @@ function M.start()
   local bindings, loadError = loadBindings()
   if not bindings then return fail(loadError or "hotkeys_config could not be loaded") end
   if not hsHotkeyBindAvailable() then return fail("hs.hotkey.bind is unavailable") end
+  if type(hs.eventtap) ~= "table"
+      or type(hs.eventtap.new) ~= "function"
+      or type(hs.eventtap.event) ~= "table"
+      or type(hs.eventtap.event.types) ~= "table"
+      or hs.eventtap.event.types.keyDown == nil then
+    return fail("hs.eventtap keyDown registration is unavailable")
+  end
 
   stopAction(aiCommands)
   stopAction(windowManagement)
   stopAction(utilityCommand)
+  if fileNameCopyEventTap or #handles > 0 then stopAction(fileNameCopy) end
+  if fileNameCopyEventTap then
+    pcall(fileNameCopyEventTap.stop, fileNameCopyEventTap)
+    pcall(fileNameCopyEventTap.delete, fileNameCopyEventTap)
+    fileNameCopyEventTap = nil
+  end
   deleteHandles(handles)
   handles = {}
 
   local newHandles = {}
   for index, binding in ipairs(bindings) do
-    local ok, handleOrError = pcall(hs.hotkey.bind, binding.modifiers, binding.key, callbackFor(binding.action))
-    local handle = handleOrError
-    if not ok or not handle then
-      deleteHandles(newHandles)
-      local reason = not ok and tostring(handleOrError) or "hs.hotkey.bind returned no handle"
-      return fail("binding " .. index .. " failed: " .. reason)
+    if binding.action.type ~= "file_name_copy" then
+      local ok, handleOrError = pcall(hs.hotkey.bind, binding.modifiers, binding.key, callbackFor(binding.action))
+      local handle = handleOrError
+      if not ok or not handle then
+        deleteHandles(newHandles)
+        local reason = not ok and tostring(handleOrError) or "hs.hotkey.bind returned no handle"
+        return fail("binding " .. index .. " failed: " .. reason)
+      end
+      newHandles[#newHandles + 1] = handle
     end
-    newHandles[#newHandles + 1] = handle
+  end
+
+  local eventTapOK, eventTapOrError = pcall(hs.eventtap.new,
+    { hs.eventtap.event.types.keyDown }, fileNameCopyEventCallback)
+  if not eventTapOK or not eventTapOrError then
+    deleteHandles(newHandles)
+    local reason = not eventTapOK and tostring(eventTapOrError) or "hs.eventtap.new returned no tap"
+    return fail("file_name_copy eventtap creation failed: " .. reason)
+  end
+  local eventTap = eventTapOrError
+  local startOK, startResult = pcall(eventTap.start, eventTap)
+  if not startOK or startResult == false then
+    pcall(eventTap.stop, eventTap)
+    pcall(eventTap.delete, eventTap)
+    deleteHandles(newHandles)
+    local reason = not startOK and tostring(startResult) or "hs.eventtap.start returned false"
+    return fail("file_name_copy eventtap start failed: " .. reason)
   end
   handles = newHandles
+  fileNameCopyEventTap = eventTap
   return true
 end
 

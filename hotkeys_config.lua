@@ -101,4 +101,7 @@ return {
 
   -- Previous display
   { modifiers = { "cmd", "ctrl" }, key = "p", action = { type = "window", command = "previous-display" } },
+
+  -- Finder / Cursor: copy the selected file basename
+  { modifiers = { "cmd", "shift" }, key = "c", action = { type = "file_name_copy" } },
 }
