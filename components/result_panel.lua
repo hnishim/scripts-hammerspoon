@@ -1,4 +1,5 @@
 local M = {}
+local hud = require("components.hud")
 
 local currentPanel
 
@@ -79,6 +80,9 @@ local function handleKey(panel, event)
 
   if not hs.pasteboard or type(hs.pasteboard.setContents) ~= "function" then return false end
   local ok, result = pcall(hs.pasteboard.setContents, panel.content)
+  if ok and result ~= false and type(hud) == "table" and type(hud.showTransient) == "function" then
+    pcall(hud.showTransient, "Copied", 2)
+  end
   return ok and result ~= false
 end
 

@@ -1,4 +1,5 @@
 local M = {}
+local hud = require("components.hud")
 
 local operationGeneration = 0
 local pendingTimer
@@ -67,6 +68,9 @@ local function writeContents(value)
   if type(hs) ~= "table" or type(hs.pasteboard) ~= "table"
       or type(hs.pasteboard.setContents) ~= "function" then return false end
   local ok, result = pcall(hs.pasteboard.setContents, value)
+  if ok and result ~= false and type(hud) == "table" and type(hud.showTransient) == "function" then
+    pcall(hud.showTransient, "Copied", 2)
+  end
   return ok and result ~= false
 end
 

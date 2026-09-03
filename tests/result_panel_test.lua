@@ -3,6 +3,7 @@ local eventTaps = {}
 local clipboard
 local pasteboardAttempts = 0
 local failures = {}
+local hudNotifications = {}
 
 local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
@@ -84,6 +85,14 @@ _G.hs = {
 }
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
+package.preload["components.hud"] = function()
+  return {
+    showTransient = function(message, seconds)
+      hudNotifications[#hudNotifications + 1] = { message = message, seconds = seconds }
+      return true
+    end,
+  }
+end
 local panel = require("components.result_panel")
 
 local function keyEvent(modifiers, keyCode)
@@ -121,8 +130,13 @@ secondView.callback("focusChange", true)
 local secondTap = eventTaps[2]
 assertEqual(secondTap.callback(keyEvent({ "cmd" }, 8)), true, "Cmd-C is consumed")
 assertEqual(clipboard, content, "Cmd-C copies raw pre-HTML content")
+assertEqual(#hudNotifications, 1, "successful Cmd-C shows one HUD notification")
+assertEqual(hudNotifications[1].message, "Copied", "successful Cmd-C HUD message")
+assertEqual(hudNotifications[1].seconds, 2, "successful Cmd-C HUD duration")
 assertEqual(secondTap.callback(keyEvent({ "cmd", "shift" }, 8)), false, "extra modifiers pass through")
+assertEqual(#hudNotifications, 1, "Cmd-Shift-C pass-through does not show another HUD notification")
 assertEqual(secondTap.callback(keyEvent({ "cmd" }, 12)), false, "other keys pass through")
+assertEqual(#hudNotifications, 1, "Cmd-Q pass-through does not show another HUD notification")
 
 secondView.callback("focusChange", false)
 assertEqual(secondTap.stopCount, 1, "focus loss stops key monitoring immediately")
@@ -219,9 +233,11 @@ local function assertCopyFailure(name, mode)
   view.callback("focusChange", true)
   local priorClipboard, priorAttempts = clipboard, pasteboardAttempts
   failures.pasteboard = mode
+  local priorNotifications = #hudNotifications
   assertEqual(tap.callback(keyEvent({ "cmd" }, 8)), false, name .. " Cmd-C is not consumed")
   assertEqual(clipboard, priorClipboard, name .. " preserves the raw clipboard value")
   assertEqual(pasteboardAttempts, priorAttempts + 1, name .. " attempts one clipboard write")
+  assertEqual(#hudNotifications, priorNotifications, name .. " does not show a success HUD")
   assertEqual(tap.active, true, name .. " keeps monitoring active after copy failure")
   resetFailures()
   assertEqual(panel.close(), true, name .. " cleanup succeeds after copy failure")
@@ -229,6 +245,19 @@ end
 
 assertCopyFailure("pasteboard return failure", "return")
 assertCopyFailure("pasteboard exception", "raise")
+
+resetFailures()
+assertEqual(panel.show("copy failure: pasteboard API absent"), true, "missing pasteboard API setup displays")
+local missingAPITap = eventTaps[#eventTaps]
+local missingAPIView = views[#views]
+missingAPIView.callback("focusChange", true)
+local priorNotifications = #hudNotifications
+local savedPasteboard = hs.pasteboard
+hs.pasteboard = nil
+assertEqual(missingAPITap.callback(keyEvent({ "cmd" }, 8)), false, "missing pasteboard API Cmd-C is not consumed")
+assertEqual(#hudNotifications, priorNotifications, "missing pasteboard API does not show a success HUD")
+hs.pasteboard = savedPasteboard
+assertEqual(panel.close(), true, "missing pasteboard API cleanup succeeds")
 
 local function assertStopFailure(name, kind, mode)
   resetFailures()
