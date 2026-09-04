@@ -10,6 +10,12 @@ local timers = {}
 local timerStops = 0
 local latestTimer = nil
 local frontmostMode = nil
+local utilityProbe = false
+local utilityFrontmostMode = nil
+local utilityFrameMode = nil
+local utilityFrameValue = { x = 1100, y = 220, w = 640, h = 480 }
+local utilityFrontmostCalls = 0
+local utilityFrameCalls = 0
 local screenMethodFailure = nil
 local screenFrameFailure = nil
 local setFrameFailure = nil
@@ -48,6 +54,8 @@ local finderScript = raycastRoot .. "/two-panes-finder.applescript"
 local titleCaseExecutable = "/bin/bash"
 local titleCaseScript = raycastRoot .. "/title-case-chicago.sh"
 local titleCasePythonScript = raycastRoot .. "/title-case-chicago.py"
+local matchingVariantScript = finderScript:gsub("two%-panes%-finder%.applescript$", "./two-panes-finder.applescript")
+local nonMatchingScriptPath = "/dev/null"
 
 local realIoOpen = io.open
 local function readRealFile(path)
@@ -217,6 +225,24 @@ _G.hs = {
   },
   window = {
       frontmostWindow = function()
+      if utilityProbe then
+        utilityFrontmostCalls = utilityFrontmostCalls + 1
+        if utilityFrontmostMode == "error" then error("utility window lookup failure") end
+        if utilityFrontmostMode == "nil" then return nil end
+        return {
+          frame = function()
+            utilityFrameCalls = utilityFrameCalls + 1
+            if utilityFrameMode == "error" then error("utility frame lookup failure") end
+            if utilityFrameMode == "nil" then return nil end
+            if utilityFrameMode == "invalid" then return { x = 1100, y = 220, w = 0, h = 480 } end
+            if utilityFrameMode == "infinite-x" then return { x = math.huge, y = 220, w = 640, h = 480 } end
+            if utilityFrameMode == "nan-y" then return { x = 1100, y = 0 / 0, w = 640, h = 480 } end
+            if utilityFrameMode == "infinite-w" then return { x = 1100, y = 220, w = math.huge, h = 480 } end
+            if utilityFrameMode == "nan-h" then return { x = 1100, y = 220, w = 640, h = 0 / 0 } end
+            return frameCopy(utilityFrameValue)
+          end,
+        }
+      end
       windowCalls = windowCalls + 1
       if frontmostMode == "error" then error("window lookup failure") end
       if frontmostMode == "nil" then return nil end
@@ -854,11 +880,11 @@ utilityCommand.stop()
 assertNoActionResidue("action cleanup")
 
 -- Finder and Title Case task callbacks retain completion/failure handling and do not leak output.
-local function assertTaskCompletion(label, executablePath, scriptPath, exitCode)
+local function assertTaskCompletion(label, executablePath, scriptPath, exitCode, expectedArguments)
   local id = taskSequence + 1
   local priorAlerts = #alerts
   utilityCommand.run(executablePath, scriptPath)
-  assertTask(id, executablePath, { scriptPath })
+  assertTask(id, executablePath, expectedArguments or { scriptPath })
   collectgarbage("collect")
   assert(taskReferences[id] ~= nil, label .. " running task must be retained")
   complete(id, exitCode, "SECRET stdout", "SECRET stderr")
@@ -873,10 +899,54 @@ local function assertTaskCompletion(label, executablePath, scriptPath, exitCode)
   end
 end
 
-assertTaskCompletion("finder success", finderExecutable, finderScript, 0)
-assertTaskCompletion("finder failure", finderExecutable, finderScript, 7)
+utilityProbe = true
+assertTaskCompletion("finder success", finderExecutable, finderScript, 0,
+  { finderScript, "1100", "220", "640", "480" })
+assertTaskCompletion("finder failure", finderExecutable, finderScript, 7,
+  { finderScript, "1100", "220", "640", "480" })
+assertTaskCompletion("finder suffix match variant", finderExecutable, matchingVariantScript, 0,
+  { matchingVariantScript, "1100", "220", "640", "480" })
+local frontmostCallsBeforeTitleCase = utilityFrontmostCalls
 assertTaskCompletion("title case success", titleCaseExecutable, titleCaseScript, 0)
 assertTaskCompletion("title case failure", titleCaseExecutable, titleCaseScript, 7)
+assertEqual(utilityFrontmostCalls, frontmostCallsBeforeTitleCase,
+  "non-Finder utility does not inspect frontmost window")
+
+local nonMatchingTaskId = taskSequence + 1
+local frontmostCallsBeforeNonMatch = utilityFrontmostCalls
+assertEqual(utilityCommand.run(finderExecutable, nonMatchingScriptPath), true,
+  "non-matching script path starts task")
+assertTask(nonMatchingTaskId, finderExecutable, { nonMatchingScriptPath })
+assertEqual(utilityFrontmostCalls, frontmostCallsBeforeNonMatch,
+  "non-matching script suffix does not inspect frontmost window")
+complete(nonMatchingTaskId, 0, "", "")
+collectgarbage("collect")
+
+local function assertFinderFallback(label, frontmostModeValue, frameModeValue)
+  utilityFrontmostMode = frontmostModeValue
+  utilityFrameMode = frameModeValue
+  local id = taskSequence + 1
+  local priorAlerts = #alerts
+  local result = utilityCommand.run(finderExecutable, finderScript)
+  assertEqual(result, true, label .. " starts task")
+  assertTask(id, finderExecutable, { finderScript })
+  complete(id, 0, "", "")
+  collectgarbage("collect")
+  assertEqual(#alerts, priorAlerts, label .. " has no notification")
+  utilityFrontmostMode = nil
+  utilityFrameMode = nil
+end
+
+assertFinderFallback("frontmost window nil", "nil", nil)
+assertFinderFallback("frontmost window error", "error", nil)
+assertFinderFallback("frontmost frame nil", nil, "nil")
+assertFinderFallback("frontmost frame error", nil, "error")
+assertFinderFallback("frontmost frame invalid", nil, "invalid")
+assertFinderFallback("frontmost x infinite", nil, "infinite-x")
+assertFinderFallback("frontmost y NaN", nil, "nan-y")
+assertFinderFallback("frontmost w infinite", nil, "infinite-w")
+assertFinderFallback("frontmost h NaN", nil, "nan-h")
+utilityProbe = false
 local beforeMissingScript = taskSequence
 local beforeMissingAlerts = #alerts
 local missingScriptResult = utilityCommand.run(titleCaseExecutable, raycastRoot .. "/missing-title-case-chicago.sh")
