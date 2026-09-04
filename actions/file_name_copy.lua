@@ -20,13 +20,18 @@ function M.stop()
   pendingTimer = nil
 end
 
-local function frontmostName()
+local function frontmostApplication()
   if type(hs) ~= "table" or type(hs.application) ~= "table"
       or type(hs.application.frontmostApplication) ~= "function" then
     return nil
   end
   local appOK, app = pcall(hs.application.frontmostApplication)
-  if not appOK or not app or type(app.name) ~= "function" then return nil end
+  return appOK and app or nil
+end
+
+local function frontmostName(app)
+  app = app or frontmostApplication()
+  if not app or type(app.name) ~= "function" then return nil end
   local nameOK, name = pcall(app.name, app)
   return nameOK and name or nil
 end
@@ -152,8 +157,182 @@ local function runFinder()
   return true
 end
 
+local urlPath
+
 local function copiedPathName(path)
-  return basename(path)
+  return basename(urlPath(path) or path)
+end
+
+local function axAttribute(element, attribute)
+  if not element or type(element.attributeValue) ~= "function" then return nil end
+  local ok, value = pcall(element.attributeValue, element, attribute)
+  return ok and value or nil
+end
+
+local function axChildren(element)
+  local children = axAttribute(element, "AXChildren")
+  return type(children) == "table" and children or {}
+end
+
+local function axElements(value)
+  if type(value) == "table" then return value end
+  if value then return { value } end
+  return {}
+end
+
+local function axElementForApp(app)
+  if type(hs) ~= "table" or type(hs.axuielement) ~= "table"
+      or type(hs.axuielement.applicationElement) ~= "function"
+      or not app or type(app.pid) ~= "function" then
+    return nil
+  end
+  local pidOK, pid = pcall(app.pid, app)
+  if not pidOK or type(pid) ~= "number" then return nil end
+  local elementOK, element = pcall(hs.axuielement.applicationElement, pid)
+  return elementOK and element or nil
+end
+
+local function cursorWindow(appElement)
+  return axAttribute(appElement, "AXFocusedWindow")
+    or axAttribute(appElement, "AXMainWindow")
+    or axChildren(appElement)[1]
+end
+
+urlPath = function(url)
+  if type(url) ~= "string" or url:find("[\r\n%z]") then return nil end
+  local path = url
+  if url:match("^file://") then
+    local encodedPath = url:sub(8)
+    if encodedPath:match("^/") then
+      path = encodedPath
+    elseif encodedPath:match("^localhost/") then
+      path = encodedPath:gsub("^localhost", "")
+    else
+      return nil
+    end
+    path = path:gsub("[?#].*$", "")
+  elseif not url:match("^/") then
+    return nil
+  end
+  path = path:gsub("%%(%x%x)", function(hex)
+    return string.char(tonumber(hex, 16))
+  end)
+  if not path:match("^/") or path:find("[\r\n%z]") then return nil end
+  return path
+end
+
+local function axPathValue(value)
+  local path = urlPath(value)
+  if path then return path end
+  if type(value) ~= "string" or value:find("[\r\n%z]") then return nil end
+  local descriptionPath = value:match("^(.-)%s+•%s+") or value
+  if descriptionPath:match("^~/") then
+    local home = os.getenv("HOME")
+    if type(home) ~= "string" or not home:match("^/") then return nil end
+    descriptionPath = home .. descriptionPath:sub(2)
+  end
+  return urlPath(descriptionPath)
+end
+
+local function axPathInSubtree(element, depth)
+  if not element or depth > 40 then return nil end
+  for _, attribute in ipairs({ "AXURL", "AXDocument", "AXDescription" }) do
+    local path = axPathValue(axAttribute(element, attribute))
+    if path then return path end
+  end
+  for _, child in ipairs(axChildren(element)) do
+    local path = axPathInSubtree(child, depth + 1)
+    if path then return path end
+  end
+  return nil
+end
+
+local function selectedExplorerPath(element)
+  for _, attribute in ipairs({ "AXSelectedRows", "AXSelectedChildren" }) do
+    local selected = axElements(axAttribute(element, attribute))
+    if #selected > 0 then
+      if #selected ~= 1 then return nil end
+      return axPathInSubtree(selected[1], 0)
+    end
+  end
+  return nil
+end
+
+local function isExplorerContainer(element)
+  if axAttribute(element, "AXRole") ~= "AXOutline" then return false end
+  for _, attribute in ipairs({ "AXTitle", "AXDescription", "AXIdentifier" }) do
+    local value = axAttribute(element, attribute)
+    if type(value) == "string" and value:lower():find("explorer", 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
+local function isExplorerFocus(element)
+  local current = element
+  for _ = 0, 40 do
+    if isExplorerContainer(current) then return true end
+    current = axAttribute(current, "AXParent")
+    if not current then return false end
+  end
+  return false
+end
+
+local function cursorCopyCommand(app)
+  if type(hs) ~= "table" or type(hs.axuielement) ~= "table"
+      or type(hs.axuielement.systemWideElement) ~= "function"
+      or not app then
+    return nil
+  end
+
+  local systemOK, systemWide = pcall(hs.axuielement.systemWideElement)
+  if not systemOK or not systemWide or type(systemWide.attributeValue) ~= "function" then
+    return nil
+  end
+  local focusedOK, focused = pcall(systemWide.attributeValue, systemWide, "AXFocusedUIElement")
+  if not focusedOK or not focused or type(focused.attributeValue) ~= "function" then
+    return nil
+  end
+  local roleOK, role = pcall(focused.attributeValue, focused, "AXRole")
+  if not roleOK then return nil end
+
+  if (role == "AXOutline" or role == "AXRow") and isExplorerFocus(focused) then
+    local expectedPath
+    if role == "AXOutline" then
+      expectedPath = selectedExplorerPath(focused)
+    else
+      expectedPath = axPathInSubtree(focused, 0)
+    end
+    if not expectedPath then return false end
+    return true, expectedPath
+  end
+
+  local appElement = axElementForApp(app)
+  if not appElement then return nil end
+  local window = cursorWindow(appElement)
+  local expectedPath = urlPath(axAttribute(window, "AXDocument"))
+  if not expectedPath then return false end
+  return true, expectedPath
+end
+
+local function runCursorDirect(snapshot, beforeCount, expectedPath)
+  local name = copiedPathName(expectedPath)
+  if not name then
+    alert("Cursorから有効なファイルパスを取得できませんでした。")
+    return false
+  end
+  if not clipboardMatches(snapshot.contents, beforeCount) then
+    alert("クリップボードの競合を検出したため、復元せず終了しました。")
+    return false
+  end
+  if writeContents(name) then return true end
+  if restoreClipboard(snapshot, snapshot.contents, beforeCount) then
+    alert("ファイル名をクリップボードへコピーできませんでした。")
+  else
+    alert("クリップボードを復元できませんでした。")
+  end
+  return false
 end
 
 local function runCursor()
@@ -162,62 +341,18 @@ local function runCursor()
     alert("クリップボードを安全に退避できないため、Cursorの処理を中止しました。")
     return false
   end
-  if type(hs.eventtap) ~= "table" or type(hs.eventtap.keyStroke) ~= "function"
-      or type(hs.timer) ~= "table" or type(hs.timer.doAfter) ~= "function" then
+  local app = frontmostApplication()
+  if frontmostName(app) ~= "Cursor" then
     alert("Cursorの選択項目を取得できませんでした。")
     return false
   end
 
-  local generation = operationGeneration
-  local firstOK, firstResult = pcall(hs.eventtap.keyStroke, { "cmd" }, "r")
-  local secondOK, secondResult = pcall(hs.eventtap.keyStroke, {}, "p")
-  if not firstOK or firstResult == false or not secondOK or secondResult == false then
+  local copyOK, expectedPath = cursorCopyCommand(app)
+  if not copyOK then
     alert("Cursorの選択項目を取得できませんでした。")
     return false
   end
-
-  local countOK, afterKeyCount = readChangeCount()
-  local expectedCount = countOK and afterKeyCount > beforeCount and afterKeyCount or nil
-  local timerOK, timer = pcall(hs.timer.doAfter, 0.2, function()
-    if operationGeneration ~= generation then return end
-    pendingTimer = nil
-    local currentCountOK, currentCount = readChangeCount()
-    local currentContentsOK, currentContents = readContents()
-    if not currentCountOK or not currentContentsOK then
-      alert("Cursorの選択項目を取得できませんでした。")
-      return
-    end
-    if expectedCount and currentCount ~= expectedCount then
-      alert("クリップボードの競合を検出したため、復元せず終了しました。")
-      return
-    end
-    if not expectedCount and currentCount <= beforeCount then
-      alert("Cursorの選択項目を取得できませんでした。")
-      return
-    end
-    local name = copiedPathName(currentContents)
-    if not name then
-      restoreClipboard(snapshot, currentContents, currentCount)
-      alert("Cursorから有効なファイルパスを取得できませんでした。")
-      return
-    end
-    if not clipboardMatches(currentContents, currentCount) then
-      alert("クリップボードの競合を検出したため、復元せず終了しました。")
-      return
-    end
-    if writeContents(name) then return end
-    if not restoreClipboard(snapshot, currentContents, currentCount) then
-      alert("クリップボードを復元できませんでした。")
-      return
-    end
-    alert("ファイル名をクリップボードへコピーできませんでした。")
-  end)
-  if not timerOK or not timer then
-    alert("Cursorの選択項目を取得できませんでした。")
-    return false
-  end
-  pendingTimer = timer
-  return true
+  return runCursorDirect(snapshot, beforeCount, expectedPath)
 end
 
 function M.run()

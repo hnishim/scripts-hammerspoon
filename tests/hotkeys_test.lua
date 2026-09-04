@@ -336,6 +336,7 @@ assertEqual(bindAttempts, expectedCount, "first start attempts the expected numb
 assertEqual(#eventTapCalls, 1, "first start registers one event tap")
 assertEqual(eventTapCalls[1].started, true, "first event tap starts")
 assertTableEqual(eventTapCalls[1].types, { hs.eventtap.event.types.keyDown }, "event tap listens only for keyDown")
+assertEqual(handles["cmd+shift:c"], nil, "file_name_copy is handled by eventtap, not hs.hotkey.bind")
 assertRegisteredBindings(expected, 1)
 assertCallbacks(expected, "initial registered bindings")
 
@@ -348,6 +349,7 @@ assertEqual(#bindCalls, expectedCount * 2, "reload registers a fresh set of hotk
 assertEqual(#deletedHandles, expectedCount, "reload deletes every previous hotkey handle")
 assertEqual(#eventTapCalls, 2, "reload registers one fresh event tap")
 assertEqual(fileNameCopyStopCalls, 1, "reload stops the previous file_name_copy action")
+assertEqual(handles["cmd+shift:c"], nil, "reloaded file_name_copy remains eventtap-only")
 assertEqual(eventTapCalls[1].stopped, true, "reload stops the previous event tap")
 assertEqual(eventTapCalls[1].deleted, true, "reload deletes the previous event tap")
 assertEqual(eventTapCalls[2].started, true, "reload starts the fresh event tap")
