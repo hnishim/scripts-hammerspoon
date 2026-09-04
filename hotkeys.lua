@@ -79,6 +79,14 @@ local function validateAction(action, bindingIndex)
   if action.type == "ai" then
     if not nonEmptyString(action.promptPath) then return false, prefix .. ".promptPath must be a non-empty string" end
     if not nonEmptyString(action.model) then return false, prefix .. ".model must be a non-empty string" end
+    if action.model_failover ~= nil then
+      if not nonEmptyString(action.model_failover) then
+        return false, prefix .. ".model_failover must be a non-empty string"
+      end
+      if action.model_failover == action.model then
+        return false, prefix .. ".model_failover must differ from model"
+      end
+    end
     if aiModes[action.mode] ~= true then return false, prefix .. ".mode must be display or replace" end
     return true
   end
@@ -147,7 +155,7 @@ end
 
 local function dispatch(action)
   if action.type == "ai" then
-    return aiCommands.run(action.promptPath, action.model, action.mode)
+    return aiCommands.run(action.promptPath, action.model, action.mode, action.model_failover)
   end
   if action.type == "app" then return appLauncher.run(action.app) end
   if action.type == "window" then return windowManagement.run(action.command) end

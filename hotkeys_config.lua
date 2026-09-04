@@ -39,7 +39,8 @@ return {
     action = {
       type = "ai",
       promptPath = promptDir .. "bio-ai_expert.md",
-      model = "gemini-flash-lite-latest",
+      model = "gemini-flash-latest",
+      model_failover = "gemini-flash-lite-latest",
       mode = "display",
     },
   },
@@ -49,7 +50,8 @@ return {
     action = {
       type = "ai",
       promptPath = promptDir .. "review-text_compact.md",
-      model = "gemini-flash-lite-latest",
+      model = "gemini-flash-latest",
+      model_failover = "gemini-flash-lite-latest",
       mode = "replace",
     },
   },

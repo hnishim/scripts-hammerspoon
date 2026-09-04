@@ -5,6 +5,7 @@ local taskCallbacks = {}
 local taskID = 0
 local hudEvents = {}
 local httpRequests = {}
+local decodeQueue = {}
 local clipboard = "prior clipboard"
 local clipboardCount = 1
 local clipboardItems = { ["public.utf8-plain-text"] = "prior clipboard" }
@@ -93,7 +94,12 @@ _G.hs = {
       local prompt = payload.contents[1].parts[1].text
       return "PROMPT:" .. prompt
     end,
-    decode = function() return { candidates = { { content = { parts = { { text = "結果" } } } } } } end,
+    decode = function()
+      local nextResult = table.remove(decodeQueue, 1)
+      if nextResult == "error" then error("injected JSON decode failure") end
+      if nextResult ~= nil then return nextResult end
+      return { candidates = { { content = { parts = { { text = "結果" } } } } } }
+    end,
   },
   uielement = {
     focusedElement = function()
@@ -180,7 +186,7 @@ _G.hs = {
 }
 
 _G.hs.http.asyncPost = function(url, body, headers, callback)
-  httpRequests[#httpRequests + 1] = { url = url, body = body, headers = headers }
+  httpRequests[#httpRequests + 1] = { url = url, body = body, headers = headers, callback = callback }
   tasks.httpCallback = callback
 end
 frontmostTarget.isFrontmost = function()
@@ -248,6 +254,28 @@ local function startCommand(failureStage, requestedOutput)
   if failureStage == "keychain" then return firstTaskID + 1 end
   completeTask(firstTaskID + 1, 0, "test-api-key\n")
   assert(tasks.httpCallback, "keychain success starts API request")
+  return requestCount()
+end
+
+local function responsePayload(text)
+  return { candidates = { { content = { parts = { { text = text } } } } } }
+end
+
+local failoverModel = "test-failover-model"
+local function startFailoverCommand(requestedOutput)
+  local firstTaskID = taskID + 1
+  ai.run(promptPath, model, requestedOutput or "display", failoverModel)
+  assertEqual(taskID, firstTaskID, "failover command creates account task")
+  completeTask(firstTaskID, 0, "test-account\n")
+  completeTask(firstTaskID + 1, 0, "test-api-key\n")
+  assert(tasks.httpCallback, "failover command starts HTTP request")
+  return requestCount()
+end
+
+local function completeHTTP(index, status, body)
+  local request = httpRequests[index]
+  assert(request and request.callback, "HTTP request " .. tostring(index) .. " has a callback")
+  request.callback(status, body or "{}", "")
 end
 
 local function assertMissingPromptDoesNotStart()
@@ -277,6 +305,99 @@ assertEqual(#resultPanelCalls.show, 1, "success delegates result display to resu
 assertEqual(resultPanelCalls.show[1], "結果", "result panel receives the response text")
 assertEqual(pasteCalls, 0, "display mode does not paste")
 assertEqual(liveTimers(), 0, "success leaves no timers")
+
+decodeQueue[#decodeQueue + 1] = responsePayload("一次成功結果")
+local primarySuccessBeforeRequests = requestCount()
+local primarySuccessBeforeShows = #resultPanelCalls.show
+local primarySuccessBeforeCloses = eventCount("close")
+local primarySuccess = startFailoverCommand()
+completeHTTP(primarySuccess, 200, "primary-success-body")
+assertEqual(requestCount(), primarySuccessBeforeRequests + 1,
+  "configured failover primary success sends exactly one HTTP request")
+assertEqual(#resultPanelCalls.show, primarySuccessBeforeShows + 1,
+  "configured failover primary success displays exactly one result")
+assertEqual(resultPanelCalls.show[#resultPanelCalls.show], "一次成功結果",
+  "configured failover primary success displays the primary result")
+assertEqual(eventCount("close"), primarySuccessBeforeCloses + 1,
+  "configured failover primary success closes the HUD")
+assertEqual(liveTimers(), 0, "configured failover primary success leaves no timers")
+
+-- HIR-132: a configured failover retries the same rendered request once for
+-- each request-level failure, while stale primary callbacks are ignored.
+local function assertFailover(label, completePrimary, completeFallback)
+  local beforeRequestCount = requestCount()
+  local firstRequest = startFailoverCommand()
+  assertEqual(firstRequest, beforeRequestCount + 1, label .. " starts one primary request")
+  local primary = httpRequests[firstRequest]
+  completePrimary(firstRequest)
+  assertEqual(requestCount(), firstRequest + 1, label .. " starts exactly one fallback request")
+  local fallback = httpRequests[firstRequest + 1]
+  assertEqual(fallback.url,
+    "https://generativelanguage.googleapis.com/v1beta/models/" .. failoverModel .. ":generateContent",
+    label .. " uses the fallback model")
+  assertEqual(fallback.body, primary.body, label .. " reuses the rendered prompt payload")
+  completeFallback(firstRequest + 1)
+  return primary, fallback
+end
+
+decodeQueue[#decodeQueue + 1] = responsePayload("フォールバック結果")
+assertFailover("HTTP failure",
+  function(index) completeHTTP(index, 503, "failure") end,
+  function(index) completeHTTP(index, 200, "{}") end)
+assertEqual(resultPanelCalls.show[#resultPanelCalls.show], "フォールバック結果", "HTTP failure fallback displays its result")
+
+decodeQueue[#decodeQueue + 1] = "error"
+assertFailover("decode failure",
+  function(index) completeHTTP(index, 200, "not-json") end,
+  function(index) completeHTTP(index, 200, "{}") end)
+
+decodeQueue[#decodeQueue + 1] = { candidates = {} }
+assertFailover("invalid response",
+  function(index) completeHTTP(index, 200, "{}") end,
+  function(index) completeHTTP(index, 200, "{}") end)
+
+local timeoutPrimary, timeoutFallback = nil, nil
+local beforeTimeoutFailover = requestCount()
+local timeoutShowsBefore = #resultPanelCalls.show
+timeoutPrimary = startFailoverCommand()
+fireLatestTimer()
+assertEqual(requestCount(), beforeTimeoutFailover + 2, "timeout starts exactly one fallback request")
+timeoutFallback = httpRequests[timeoutPrimary + 1]
+assertEqual(timeoutFallback.url,
+  "https://generativelanguage.googleapis.com/v1beta/models/" .. failoverModel .. ":generateContent",
+  "timeout fallback uses the fallback model")
+assertEqual(timeoutFallback.body, httpRequests[timeoutPrimary].body, "timeout fallback reuses the rendered prompt payload")
+decodeQueue[#decodeQueue + 1] = responsePayload("timeout fallback result")
+completeHTTP(timeoutPrimary + 1, 200, "fallback-body")
+assertEqual(#resultPanelCalls.show, timeoutShowsBefore + 1,
+  "timeout fallback displays exactly one result")
+assertEqual(resultPanelCalls.show[#resultPanelCalls.show], "timeout fallback result",
+  "timeout fallback displays the fallback result")
+local closesBeforeStalePrimary = eventCount("close")
+local showsBeforeStalePrimary = #resultPanelCalls.show
+local resultBeforeStalePrimary = resultPanelCalls.show[#resultPanelCalls.show]
+completeHTTP(timeoutPrimary, 200, "stale primary body")
+assertEqual(eventCount("close"), closesBeforeStalePrimary, "stale primary callback cannot close fallback result")
+assertEqual(#resultPanelCalls.show, showsBeforeStalePrimary,
+  "stale primary callback cannot display another result")
+assertEqual(resultPanelCalls.show[#resultPanelCalls.show], resultBeforeStalePrimary,
+  "stale primary callback cannot overwrite the fallback result")
+assertEqual(liveTimers(), 0, "timeout fallback leaves no timers")
+
+local alertsBeforeSecondFailure = #alerts
+assertFailover("second failure",
+  function(index) completeHTTP(index, 500, "failure") end,
+  function(index) completeHTTP(index, 500, "failure") end)
+assertEqual(#alerts, alertsBeforeSecondFailure + 1, "second failure uses the existing error notification")
+assertEqual(liveTimers(), 0, "second failure leaves no timers")
+
+local requestsBeforeNoFailover = requestCount()
+local alertsBeforeNoFailover = #alerts
+startCommand()
+completeHTTP(requestsBeforeNoFailover + 1, 500, "failure")
+assertEqual(requestCount(), requestsBeforeNoFailover + 1, "missing failover does not retry")
+assertEqual(#alerts, alertsBeforeNoFailover + 1, "missing failover uses the existing error notification")
+assertEqual(liveTimers(), 0, "missing failover leaves no timers")
 
 local stopCallsBefore = resultPanelCalls.stop
 assertEqual(ai.stop(), nil, "stop preserves the existing no-value API")
@@ -363,6 +484,32 @@ local function resetReplaceState()
   writeAllDataCalls = 0
   tasks.httpCallback = nil
 end
+
+resetReplaceState()
+local replaceFailoverBeforeCloses = eventCount("close")
+local replaceFailoverBeforePasteCalls = pasteCalls
+local replaceFailoverBeforeRequests = requestCount()
+decodeQueue[#decodeQueue + 1] = responsePayload("フォールバック置換結果")
+local replaceFailoverPrimary = startFailoverCommand("replace")
+completeHTTP(replaceFailoverPrimary, 503, "replace primary failure")
+local replaceFailoverFallback = replaceFailoverPrimary + 1
+assertEqual(httpRequests[replaceFailoverFallback].url,
+  "https://generativelanguage.googleapis.com/v1beta/models/test-failover-model:generateContent",
+  "replace failover uses the fallback model")
+assertEqual(httpRequests[replaceFailoverFallback].body, httpRequests[replaceFailoverPrimary].body,
+  "replace failover reuses the rendered prompt payload")
+completeHTTP(replaceFailoverFallback, 200, "replace fallback success")
+assertEqual(pasteCalls, replaceFailoverBeforePasteCalls + 1,
+  "replace failover pastes the fallback result into the target")
+assertEqual(clipboard, "フォールバック置換結果",
+  "replace failover pastes the fallback result")
+fireLatestTimer()
+assertEqual(clipboard, "prior clipboard", "replace failover restores the prior clipboard")
+assertEqual(liveTimers(), 0, "replace failover leaves no timers")
+assertEqual(eventCount("close"), replaceFailoverBeforeCloses + 1,
+  "replace failover closes the HUD once")
+assertEqual(requestCount(), replaceFailoverBeforeRequests + 2,
+  "replace failover sends primary and fallback requests")
 
 local function runReplaceFailure(label, failure)
   resetReplaceState()

@@ -150,9 +150,9 @@ local raycastRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/s
 local hammerspoonExternalScriptsRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/hammerspoon/external_scripts/"
 local expected = {
   { modifiers = { "cmd", "alt", "shift" }, key = "b",
-    action = { type = "ai", promptPath = promptDir .. "bio-ai_expert.md", model = "gemini-flash-lite-latest", mode = "display" } },
+    action = { type = "ai", promptPath = promptDir .. "bio-ai_expert.md", model = "gemini-flash-latest", model_failover = "gemini-flash-lite-latest", mode = "display" } },
   { modifiers = { "cmd", "alt", "shift" }, key = "r",
-    action = { type = "ai", promptPath = promptDir .. "review-text_compact.md", model = "gemini-flash-lite-latest", mode = "replace" } },
+    action = { type = "ai", promptPath = promptDir .. "review-text_compact.md", model = "gemini-flash-latest", model_failover = "gemini-flash-lite-latest", mode = "replace" } },
   { modifiers = { "cmd", "alt", "shift" }, key = "t",
     action = { type = "ai", promptPath = promptDir .. "translate.md", model = "gemini-flash-lite-latest", mode = "replace" } },
 }
@@ -209,6 +209,12 @@ local expectedFileNameCopy = {
   modifiers = { "cmd", "shift" }, key = "c",
   action = { type = "file_name_copy" },
 }
+assertEqual(expected[1].action.model, "gemini-flash-latest", "normal AI primary model")
+assertEqual(expected[1].action.model_failover, "gemini-flash-lite-latest", "normal AI failover model")
+assertEqual(expected[2].action.model, "gemini-flash-latest", "replace AI primary model")
+assertEqual(expected[2].action.model_failover, "gemini-flash-lite-latest", "replace AI failover model")
+assertEqual(expected[3].action.model, "gemini-flash-lite-latest", "translate primary model")
+assertEqual(expected[3].action.model_failover, nil, "translate has no failover model")
 
 local expectedBySignature = {}
 for _, binding in ipairs(expected) do
@@ -218,7 +224,7 @@ for _, binding in ipairs(expected) do
 end
 
 local function actionArguments(action)
-  if action.type == "ai" then return { action.promptPath, action.model, action.mode } end
+  if action.type == "ai" then return { action.promptPath, action.model, action.mode, action.model_failover } end
   if action.type == "app" then return { action.app } end
   if action.type == "window" or action.type == "url" then return { action.command } end
   if action.type == "utility" then return { action.executablePath, action.scriptPath } end
@@ -429,6 +435,7 @@ changedAI.modifiers = { "cmd", "shift" }
 changedAI.key = "Q"
 changedAI.action.promptPath = promptDir .. "changed.md"
 changedAI.action.model = "changed-model"
+changedAI.action.model_failover = "changed-failover-model"
 changedAI.action.mode = "replace"
 config[aiIndex] = changedAI
 local changedApp = copyBinding(config[appIndex])
@@ -470,6 +477,7 @@ assertTableEqual(actionCalls[1].args, actionArguments(changedAI.action), "change
 assertEqual(actionCalls[1].args[1], promptDir .. "changed.md", "changed AI promptPath")
 assertEqual(actionCalls[1].args[2], "changed-model", "changed AI model")
 assertEqual(actionCalls[1].args[3], "replace", "changed AI mode")
+assertEqual(actionCalls[1].args[4], "changed-failover-model", "changed AI failover model")
 assertEqual(actionCalls[2].name, "app", "changed app action module")
 assertTableEqual(actionCalls[2].args, { "Changed App" }, "changed app argument")
 assertEqual(actionCalls[3].name, "window", "changed window action module")
@@ -583,6 +591,9 @@ local invalidCases = {
   { "non-string AI promptPath", function() local b = copyBinding(config[aiIndex]); b.action.promptPath = 1; config[aiIndex] = b end },
   { "missing AI model", function() local b = copyBinding(config[aiIndex]); b.action.model = nil; config[aiIndex] = b end },
   { "non-string AI model", function() local b = copyBinding(config[aiIndex]); b.action.model = 1; config[aiIndex] = b end },
+  { "empty AI failover model", function() local b = copyBinding(config[aiIndex]); b.action.model_failover = ""; config[aiIndex] = b end },
+  { "non-string AI failover model", function() local b = copyBinding(config[aiIndex]); b.action.model_failover = 1; config[aiIndex] = b end },
+  { "same AI primary and failover model", function() local b = copyBinding(config[aiIndex]); b.action.model_failover = b.action.model; config[aiIndex] = b end },
   { "missing AI mode", function() local b = copyBinding(config[aiIndex]); b.action.mode = nil; config[aiIndex] = b end },
   { "non-string AI mode", function() local b = copyBinding(config[aiIndex]); b.action.mode = 1; config[aiIndex] = b end },
   { "invalid AI mode", function() local b = copyBinding(config[aiIndex]); b.action.mode = "append"; config[aiIndex] = b end },

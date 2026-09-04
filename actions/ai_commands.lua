@@ -277,37 +277,57 @@ local function startGemini(state, command, prompt, apiKey, target)
     contents = { { parts = { { text = prompt } } } },
   })
   if not encodeOK or not body then release(state, true); return end
-  local url = "https://generativelanguage.googleapis.com/v1beta/models/" .. command.model .. ":generateContent"
   local headers = { ["Content-Type"] = "application/json", ["x-goog-api-key"] = apiKey }
-  local function callback(status, responseBody, _)
+  local function issue(model, isFallback)
     if not isActive(state) then return end
-    stopTimer(state.watchdog)
-    state.watchdog = nil
-    if type(status) ~= "number" or status < 200 or status >= 300 or type(responseBody) ~= "string" then
+    state.requestGeneration = (state.requestGeneration or 0) + 1
+    local generation = state.requestGeneration
+    local url = "https://generativelanguage.googleapis.com/v1beta/models/" .. model .. ":generateContent"
+    local function failRequest()
+      if not isActive(state) or state.requestGeneration ~= generation then return end
+      stopTimer(state.watchdog)
+      state.watchdog = nil
+      if not isFallback and command.model_failover then
+        issue(command.model_failover, true)
+      else
+        release(state, true)
+      end
+    end
+    local function failLocal()
+      if not isActive(state) or state.requestGeneration ~= generation then return end
+      stopTimer(state.watchdog)
+      state.watchdog = nil
       release(state, true)
-      return
     end
-    local decodeOK, payload = pcall(hs.json.decode, responseBody)
-    if not decodeOK then release(state, true); return end
-    local responseOK, response = responseText(payload)
-    if not responseOK or response == "" then release(state, true); return end
-    if target then
-      finishReplace(target, response, function(errorMessage) release(state, errorMessage) end, state.priorSnapshot)
-      return
+    local function callback(status, responseBody, _)
+      if not isActive(state) or state.requestGeneration ~= generation then return end
+      stopTimer(state.watchdog)
+      state.watchdog = nil
+      if type(status) ~= "number" or status < 200 or status >= 300 or type(responseBody) ~= "string" then
+        failRequest(); return
+      end
+      local decodeOK, payload = pcall(hs.json.decode, responseBody)
+      if not decodeOK then failRequest(); return end
+      local responseOK, response = responseText(payload)
+      if not responseOK or response == "" then failRequest(); return end
+      if target then
+        finishReplace(target, response, function(errorMessage) release(state, errorMessage) end, state.priorSnapshot)
+        return
+      end
+      release(state)
+      local showOK, displayed = pcall(resultPanel.show, response)
+      if not showOK or not displayed then showSafeError() end
     end
-    release(state)
-    local showOK, displayed = pcall(resultPanel.show, response)
-    if not showOK or not displayed then showSafeError() end
+    local timerOK, timer = scheduleTimer(httpTimeout, function()
+      if not isActive(state) or state.requestGeneration ~= generation then return end
+      failRequest()
+    end)
+    if not timerOK then failLocal(); return end
+    state.watchdog = timer
+    local postOK = pcall(hs.http.asyncPost, url, body, headers, callback)
+    if not postOK then failLocal() end
   end
-  local timerOK, timer = scheduleTimer(httpTimeout, function()
-    if not isActive(state) then return end
-    state.httpTimedOut = true
-    release(state, true)
-  end)
-  if not timerOK then release(state, true); return end
-  state.watchdog = timer
-  local postOK = pcall(hs.http.asyncPost, url, body, headers, callback)
-  if not postOK and isActive(state) then release(state, true) end
+  issue(command.model, false)
 end
 
 local function startKeychain(state, command, prompt, target)
@@ -359,7 +379,7 @@ local function startKeychain(state, command, prompt, target)
   armWatchdog()
 end
 
-local function runPowerPointFallback(promptPath, model, mode, target)
+local function runPowerPointFallback(promptPath, model, mode, target, modelFailover)
   if not frontmost(target) then showSafeError(); return false end
   local priorOK, prior, beforeCount = clipboardSnapshot()
   if not priorOK then showSafeError(); return false end
@@ -370,7 +390,7 @@ local function runPowerPointFallback(promptPath, model, mode, target)
     local currentOK, current, currentCount, types = clipboardSnapshot()
     if not currentOK then showSafeError(); return end
     if currentCount == beforeCount then
-      runPrompt(promptPath, model)
+      runPrompt(promptPath, model, modelFailover)
       return
     end
     if currentCount ~= beforeCount + 1 or not clipboardIsText(types) then showSafeError(); return end
@@ -378,7 +398,7 @@ local function runPowerPointFallback(promptPath, model, mode, target)
     if not contentsOK or type(contents) ~= "string" then showSafeError(); return end
     if contents == "" then
       if not restoreClipboard(prior) then showSafeError(); return end
-      runPrompt(promptPath, model)
+      runPrompt(promptPath, model, modelFailover)
       return
     end
     if mode ~= "replace" then
@@ -387,21 +407,21 @@ local function runPowerPointFallback(promptPath, model, mode, target)
     local priorSnapshot = { snapshot = prior, count = beforeCount,
       currentCount = currentCount, currentContents = contents }
     runCommand(promptPath, model, mode, contents, mode == "replace" and target or nil,
-      mode == "replace" and priorSnapshot or nil)
+      mode == "replace" and priorSnapshot or nil, modelFailover)
   end)
   if not timerOK then showSafeError(); return false end
   return true
 end
 
-runPrompt = function(promptPath, model)
+runPrompt = function(promptPath, model, modelFailover)
   local button, input = hs.dialog.textPrompt("Gemini AI command", "Geminiへ渡すテキストを入力してください。", "", "実行", "キャンセル")
   if button ~= "実行" then return end
   input = trim(input)
   if input == "" then showMessage("入力テキストが空です。"); return end
-  runCommand(promptPath, model, "display", input, nil)
+  runCommand(promptPath, model, "display", input, nil, nil, modelFailover)
 end
 
-runCommand = function(promptPath, model, mode, input, target, priorSnapshot)
+runCommand = function(promptPath, model, mode, input, target, priorSnapshot, modelFailover)
   if activeTask then showMessage("別のAIコマンドを実行中です。"); return end
   if type(promptPath) ~= "string" or promptPath == "" or type(model) ~= "string" or model == ""
       or (mode ~= "display" and mode ~= "replace") or type(input) ~= "string" then
@@ -417,13 +437,14 @@ runCommand = function(promptPath, model, mode, input, target, priorSnapshot)
     priorSnapshot = priorSnapshot }
   activeTask = state
   hud.show("Gemini処理中...")
-  startKeychain(state, { model = model }, prompt, target)
+  startKeychain(state, { model = model, model_failover = modelFailover }, prompt, target)
   return true
 end
 
-function M.run(promptPath, model, mode)
+function M.run(promptPath, model, mode, modelFailover)
   if type(promptPath) ~= "string" or promptPath == "" or type(model) ~= "string" or model == ""
-      or (mode ~= "display" and mode ~= "replace") then
+      or (mode ~= "display" and mode ~= "replace")
+      or (modelFailover ~= nil and (type(modelFailover) ~= "string" or modelFailover == "" or modelFailover == model)) then
     showSafeError(); return false
   end
   local target
@@ -433,12 +454,12 @@ function M.run(promptPath, model, mode)
   local powerPoint = isPowerPoint(target)
   local selection, acquired = acquireSelection()
   if not acquired then
-    if powerPoint then return runPowerPointFallback(promptPath, model, mode, target) end
+    if powerPoint then return runPowerPointFallback(promptPath, model, mode, target, modelFailover) end
     showSafeError()
     return false
   end
   if selection == "" then
-    runPrompt(promptPath, model)
+    runPrompt(promptPath, model, modelFailover)
     return true
   end
   local priorSnapshot
@@ -447,7 +468,7 @@ function M.run(promptPath, model, mode)
     if not priorOK then showSafeError(); return false end
     priorSnapshot = { snapshot = snapshot, count = count }
   end
-  return runCommand(promptPath, model, mode, selection, mode == "replace" and target or nil, priorSnapshot)
+  return runCommand(promptPath, model, mode, selection, mode == "replace" and target or nil, priorSnapshot, modelFailover)
 end
 
 return M
