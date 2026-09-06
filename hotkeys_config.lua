@@ -10,7 +10,7 @@ return {
   -- Application launchers
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "a", action = { type = "app", app = "Microsoft Teams" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "b", action = { type = "app", app = "Arc" } },
-  { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "c", action = { type = "app", app = "Ferdium" } },
+  { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "c", action = { type = "app", app = "Fantastical" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "d", action = { type = "app", app = "Cogito" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "e", action = { type = "app", app = "Cursor" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "f", action = { type = "app", app = "Finder" } },
