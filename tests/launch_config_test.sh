@@ -221,4 +221,10 @@ else
   fail "central hotkey registration and delegation test"
 fi
 
+if lua "$repo_root/tests/input_source_guard_test.lua"; then
+  pass "input source guard test"
+else
+  fail "input source guard test"
+fi
+
 exit "$status"
