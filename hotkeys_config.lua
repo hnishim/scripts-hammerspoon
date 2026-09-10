@@ -67,7 +67,7 @@ return {
 
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "a", action = { type = "app", app = "Microsoft Teams" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "b", action = { type = "app", app = "Arc" } },
-  { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "c", action = { type = "app", app = "Fantastical" } },
+  { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "c", action = { type = "app", app = "Ferdium" } },
   -- d
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "e", action = { type = "app", app = "Cursor" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "f", action = { type = "app", app = "Finder" } },
@@ -78,7 +78,7 @@ return {
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "k", action = { type = "app", app = "Linear" } },
   -- l
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "m", action = { type = "app", app = "Meru" } },
-  -- n
+  { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "n", action = { type = "app", app = "Notion" } },
   -- o
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "p", action = { type = "app", app = "Microsoft PowerPoint" } },
   -- q
