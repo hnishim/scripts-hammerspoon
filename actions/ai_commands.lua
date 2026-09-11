@@ -97,13 +97,33 @@ function M.stop()
   pcall(resultPanel.stop)
 end
 
-local function acquireSelection()
+local function focusedElement()
   if not hs.uielement or not hs.uielement.focusedElement then return nil, false end
   local focusedOK, focused = pcall(hs.uielement.focusedElement)
-  if not focusedOK or not focused then return nil, false end
+  return focused, focusedOK and focused ~= nil
+end
+
+local function acquireSelection()
+  local focused, focusedOK = focusedElement()
+  if not focusedOK then return nil, false end
   local selectedOK, selection = pcall(function() return focused:selectedText() end)
   if not selectedOK or selection == nil then return nil, false end
-  return selection, true
+  return selection, true, focused
+end
+
+local editableRoles = {
+  AXComboBox = true,
+  AXSearchField = true,
+  AXTextArea = true,
+  AXTextField = true,
+}
+
+local function canReplace(focused)
+  if not focused or type(focused.attributeValue) ~= "function" then return false end
+  local roleOK, role = pcall(function() return focused:attributeValue("AXRole") end)
+  if not roleOK or not editableRoles[role] then return false end
+  local editableOK, editable = pcall(function() return focused:attributeValue("AXEditable") end)
+  return editableOK and editable == true
 end
 
 local function frontmost(target)
@@ -187,6 +207,13 @@ local function clipboardMatches(expectedContents, expectedCount)
   local snapshotOK, _, currentCount, types = clipboardSnapshot()
   if not snapshotOK or currentCount ~= expectedCount then return false end
   if not clipboardIsText(types) then return false end
+  local contentsOK, contents = clipboardContents()
+  return contentsOK and contents == expectedContents
+end
+
+local function clipboardContentsMatch(expectedContents, expectedCount)
+  local snapshotOK, _, currentCount = clipboardSnapshot()
+  if not snapshotOK or currentCount ~= expectedCount then return false end
   local contentsOK, contents = clipboardContents()
   return contentsOK and contents == expectedContents
 end
@@ -413,6 +440,36 @@ local function runPowerPointFallback(promptPath, model, mode, target, modelFailo
   return true
 end
 
+local function runClipboardFallback(promptPath, model, _mode, modelFailover, target)
+  if not frontmost(target) then showSafeError(); return false end
+  local priorOK, prior, beforeCount = clipboardSnapshot()
+  if not priorOK then showSafeError(); return false end
+  local copyOK, copyResult = pcall(hs.eventtap.keyStroke, { "cmd" }, "c")
+  if not copyOK or copyResult == false then showSafeError(); return false end
+  local timerOK = scheduleTimer(0.1, function()
+    if not frontmost(target) then showSafeError(); return end
+    local currentOK, _, currentCount, types = clipboardSnapshot()
+    if not currentOK or currentCount ~= beforeCount + 1 then
+      showSafeError(); return
+    end
+    local contentsOK, contents = clipboardContents()
+    if not contentsOK or type(contents) ~= "string" then showSafeError(); return end
+    if not clipboardContentsMatch(contents, currentCount) then showSafeError(); return end
+    if not clipboardIsText(types) then
+      if not restoreClipboard(prior) then showSafeError(); return end
+      showSafeError(); return
+    end
+    if not restoreClipboard(prior) then showSafeError(); return end
+    if contents == "" then
+      runPrompt(promptPath, model, modelFailover)
+      return
+    end
+    runCommand(promptPath, model, "display", contents, nil, nil, modelFailover)
+  end)
+  if not timerOK then showSafeError(); return false end
+  return true
+end
+
 runPrompt = function(promptPath, model, modelFailover)
   local button, input = hs.dialog.textPrompt("Gemini AI command", "Geminiへ渡すテキストを入力してください。", "", "実行", "キャンセル")
   if button ~= "実行" then return end
@@ -452,23 +509,23 @@ function M.run(promptPath, model, mode, modelFailover)
   if appOK then target = app end
   if mode == "replace" and not target then showSafeError(); return false end
   local powerPoint = isPowerPoint(target)
-  local selection, acquired = acquireSelection()
+  local selection, acquired, selectionElement = acquireSelection()
   if not acquired then
     if powerPoint then return runPowerPointFallback(promptPath, model, mode, target, modelFailover) end
-    showSafeError()
-    return false
+    return runClipboardFallback(promptPath, model, mode, modelFailover, target)
   end
   if selection == "" then
     runPrompt(promptPath, model, modelFailover)
     return true
   end
   local priorSnapshot
-  if mode == "replace" then
+  local replaceTarget = mode == "replace" and canReplace(selectionElement) and target or nil
+  if replaceTarget then
     local priorOK, snapshot, count = clipboardSnapshot()
     if not priorOK then showSafeError(); return false end
     priorSnapshot = { snapshot = snapshot, count = count }
   end
-  return runCommand(promptPath, model, mode, selection, mode == "replace" and target or nil, priorSnapshot, modelFailover)
+  return runCommand(promptPath, model, mode, selection, replaceTarget, priorSnapshot, modelFailover)
 end
 
 return M
