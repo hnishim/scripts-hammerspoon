@@ -13,15 +13,21 @@ local clipboardContentTypes = { { "public.utf8-plain-text" } }
 local clipboardFailure = nil
 local pasteCalls = 0
 local copyCalls = 0
+local copyAttemptCalls = 0
 local clearCalls = 0
 local writeAllDataCalls = 0
 local frontmostTarget = {}
 local frontmostIsPowerPoint = false
 local frontmostPowerPointBundleID = "com.microsoft.Powerpoint"
 local focusedSelection = "入力"
+local focusedRole = "AXTextField"
+local focusedEditable = true
+local selectedTextCalls = 0
+local focusedElementFailure = nil
 local copyResult = "入力"
 local copyContentType = "public.utf8-plain-text"
 local copyFailure = nil
+local replaceEditable = true
 local dialogResult = { "実行", "手入力" }
 local dialogCalls = {}
 local replaceFailure = nil
@@ -103,7 +109,14 @@ _G.hs = {
   },
   uielement = {
     focusedElement = function()
-      return { selectedText = function()
+      if focusedElementFailure == "nil" then return nil end
+      if focusedElementFailure == "error" then error("injected focusedElement failure") end
+      return { attributeValue = function(_, name)
+        if name == "AXRole" then return focusedRole end
+        if name == "AXEditable" then return focusedEditable end
+        return nil
+      end, selectedText = function()
+        selectedTextCalls = selectedTextCalls + 1
         if focusedSelection == "error" then error("injected selectedText failure") end
         return focusedSelection
       end }
@@ -160,6 +173,7 @@ _G.hs = {
     keyStroke = function(modifiers, key)
       assertEqual(table.concat(modifiers, "+"), "cmd", "AI command uses Command key")
       if key == "c" then
+        copyAttemptCalls = copyAttemptCalls + 1
         if copyFailure == "keyStroke" then error("injected Command-C failure") end
         copyCalls = copyCalls + 1
         if copyFailure ~= "noChange" then
@@ -174,6 +188,7 @@ _G.hs = {
       assertEqual(key, "v", "replace uses Command-V")
       if replaceFailure == "keyStroke" then error("injected Command-V failure") end
       pasteCalls = pasteCalls + 1
+      if replaceEditable then focusedSelection = clipboard end
       return true
     end,
   },
@@ -452,13 +467,19 @@ assertEqual(#alerts, alertsBeforeTimeoutRetry, "successful retry needs no error 
 
 local priorClipboard = clipboard
 local priorPasteCalls = pasteCalls
+local replaceShowsBefore = #resultPanelCalls.show
+selectedTextCalls = 0
 startCommand(nil, "replace")
 tasks.httpCallback(200, "{}", "")
 assertEqual(pasteCalls, priorPasteCalls + 1, "replace mode pastes the response into the target")
 assertEqual(clipboard, "結果", "replace mode places the response on the clipboard before paste")
+assertEqual(#resultPanelCalls.show, replaceShowsBefore,
+  "editable replace does not display the result in the result panel")
 fireLatestTimer()
 assertEqual(clipboard, priorClipboard, "replace mode restores the prior clipboard")
 assertEqual(liveTimers(), 0, "replace mode leaves no timers after restore")
+assertEqual(selectedTextCalls, 1, "editable replace reads selected text only at command start")
+assertEqual(focusedSelection, "結果", "editable replace changes the selected content")
 
 local function resetReplaceState()
   replaceFailure = nil
@@ -470,7 +491,12 @@ local function resetReplaceState()
   clipboardFailure = nil
   copyResult = "入力"
   copyContentType = "public.utf8-plain-text"
+  replaceEditable = true
   focusedSelection = "入力"
+  focusedRole = "AXTextField"
+  focusedEditable = true
+  selectedTextCalls = 0
+  focusedElementFailure = nil
   frontmostIsPowerPoint = false
   frontmostPowerPointBundleID = "com.microsoft.Powerpoint"
   frontmostLostAfterCopy = false
@@ -480,6 +506,7 @@ local function resetReplaceState()
   copyFailure = nil
   pasteCalls = 0
   copyCalls = 0
+  copyAttemptCalls = 0
   clearCalls = 0
   writeAllDataCalls = 0
   tasks.httpCallback = nil
@@ -550,6 +577,279 @@ local function completeSuccessfulRequest(mode)
   assert(tasks.httpCallback, "scenario starts HTTP request")
   tasks.httpCallback(200, "{}", "")
 end
+
+resetReplaceState()
+frontmostIsPowerPoint = false
+focusedSelection = "編集不可選択"
+focusedEditable = false
+local fallbackBeforeShows = #resultPanelCalls.show
+local fallbackBeforeCloses = eventCount("close")
+local fallbackBeforePasteCalls = pasteCalls
+local fallbackPriorClipboard = clipboard
+completeSuccessfulRequest("replace")
+assertEqual(pasteCalls, fallbackBeforePasteCalls,
+  "non-editable replace does not invoke Command-V")
+assertEqual(focusedSelection, "編集不可選択",
+  "non-editable replace leaves the selected content unchanged")
+assertEqual(eventCount("close"), fallbackBeforeCloses + 1,
+  "non-editable replace closes the HUD once")
+assertEqual(liveTimers(), 0, "non-editable replace leaves no timers")
+assertEqual(#resultPanelCalls.show, fallbackBeforeShows + 1,
+  "non-editable replace displays the AI result in the result panel once")
+assertEqual(resultPanelCalls.show[#resultPanelCalls.show], "結果",
+  "non-editable replace does not lose the AI result")
+
+for _, invalidTarget in ipairs({
+  { label = "AXEditable=false", role = "AXTextField", editable = false },
+  { label = "AXEditable unavailable", role = "AXTextField", editable = nil },
+  { label = "non-editing AXRole", role = "AXStaticText", editable = true },
+  { label = "unknown AXRole", role = "AXUnknownRole", editable = true },
+}) do
+  resetReplaceState()
+  focusedSelection = invalidTarget.label .. " selection"
+  focusedRole = invalidTarget.role
+  focusedEditable = invalidTarget.editable
+  local beforeShows, beforePastes, beforeAlerts = #resultPanelCalls.show, pasteCalls, #alerts
+  completeSuccessfulRequest("replace")
+  assertEqual(pasteCalls, beforePastes, invalidTarget.label .. " does not invoke Command-V")
+  assertEqual(#resultPanelCalls.show, beforeShows + 1,
+    invalidTarget.label .. " displays the result in result_panel")
+  assertEqual(#alerts, beforeAlerts, invalidTarget.label .. " is not a generic error")
+  assertEqual(liveTimers(), 0, invalidTarget.label .. " leaves no timers")
+end
+
+-- Accessibility selection failure falls back to one Command-C capture for
+-- ordinary applications, then restores the user's clipboard before display.
+resetReplaceState()
+frontmostIsPowerPoint = false
+focusedSelection = nil
+copyResult = "Command-C fallback selection"
+local fallbackCopyBefore = copyCalls
+local fallbackTaskBefore = taskID
+local fallbackClipboard = clipboard
+local fallbackShowsBefore = #resultPanelCalls.show
+ai.run(promptPath, model, "replace")
+assertEqual(copyCalls, fallbackCopyBefore + 1, "ordinary-app selection failure invokes Command-C once")
+fireLatestTimer()
+assertEqual(clipboard, fallbackClipboard, "Command-C fallback restores the original clipboard before AI")
+assertEqual(taskID, fallbackTaskBefore + 1, "Command-C fallback starts the AI request")
+completeTask(fallbackTaskBefore + 1, 0, "test-account\n")
+completeTask(fallbackTaskBefore + 2, 0, "test-api-key\n")
+assert(tasks.httpCallback, "Command-C fallback starts HTTP")
+tasks.httpCallback(200, "{}", "")
+assertEqual(httpRequests[#httpRequests].body, "PROMPT:AI prompt: " .. copyResult,
+  "Command-C fallback includes copied text in the Gemini prompt body")
+assertEqual(pasteCalls, 0, "Command-C fallback does not replace")
+assertEqual(#resultPanelCalls.show, fallbackShowsBefore + 1,
+  "Command-C fallback displays the result in result_panel")
+assertEqual(clipboard, fallbackClipboard, "Command-C fallback preserves the original clipboard")
+assertEqual(liveTimers(), 0, "Command-C fallback leaves no timers")
+
+resetReplaceState()
+frontmostIsPowerPoint = false
+focusedSelection = "error"
+copyResult = "selectedText例外後の捕捉結果"
+local ordinaryExceptionCopyBefore = copyCalls
+local ordinaryExceptionTaskBefore = taskID
+local ordinaryExceptionRequestsBefore = requestCount()
+local ordinaryExceptionPasteBefore = pasteCalls
+local ordinaryExceptionClipboard = clipboard
+local ordinaryExceptionShowsBefore = #resultPanelCalls.show
+ai.run(promptPath, model, "replace")
+assertEqual(copyCalls, ordinaryExceptionCopyBefore + 1,
+  "ordinary-app selectedText exception invokes Command-C once")
+fireLatestTimer()
+assertEqual(clipboard, ordinaryExceptionClipboard,
+  "ordinary-app selectedText exception restores the original clipboard")
+assertEqual(taskID, ordinaryExceptionTaskBefore + 1,
+  "ordinary-app selectedText exception starts the AI task")
+completeTask(ordinaryExceptionTaskBefore + 1, 0, "test-account\n")
+completeTask(ordinaryExceptionTaskBefore + 2, 0, "test-api-key\n")
+assert(tasks.httpCallback, "ordinary-app selectedText exception starts HTTP")
+assertEqual(requestCount(), ordinaryExceptionRequestsBefore + 1,
+  "ordinary-app selectedText exception starts one HTTP request")
+tasks.httpCallback(200, "{}", "")
+assertEqual(httpRequests[#httpRequests].body, "PROMPT:AI prompt: " .. copyResult,
+  "ordinary-app selectedText exception includes copied text in the Gemini prompt body")
+assertEqual(pasteCalls, ordinaryExceptionPasteBefore,
+  "ordinary-app selectedText exception does not paste")
+assertEqual(#resultPanelCalls.show, ordinaryExceptionShowsBefore + 1,
+  "ordinary-app selectedText exception displays the result in result_panel")
+assertEqual(clipboard, ordinaryExceptionClipboard,
+  "ordinary-app selectedText exception preserves the original clipboard")
+assertEqual(liveTimers(), 0, "ordinary-app selectedText exception leaves no timers")
+
+local function completeOrdinaryDisplayCapture(label, configure)
+  resetReplaceState()
+  frontmostIsPowerPoint = false
+  configure()
+  local beforeCopyCalls = copyCalls
+  local beforeTaskID = taskID
+  local beforeRequestCount = requestCount()
+  local beforeShows = #resultPanelCalls.show
+  local beforePastes = pasteCalls
+  local priorClipboard = clipboard
+  ai.run(promptPath, model, "display")
+  assertEqual(copyCalls, beforeCopyCalls + 1, label .. " invokes Command-C once")
+  if liveTimers() > 0 then fireLatestTimer() end
+  assertEqual(clipboard, priorClipboard, label .. " restores the original clipboard before AI")
+  assertEqual(taskID, beforeTaskID + 1, label .. " starts the AI task")
+  completeTask(beforeTaskID + 1, 0, "test-account\n")
+  completeTask(beforeTaskID + 2, 0, "test-api-key\n")
+  assert(tasks.httpCallback, label .. " starts HTTP")
+  tasks.httpCallback(200, "{}", "")
+  assertEqual(requestCount(), beforeRequestCount + 1, label .. " starts one HTTP request")
+  assertEqual(httpRequests[#httpRequests].body, "PROMPT:AI prompt: " .. copyResult,
+    label .. " includes copied text in the Gemini prompt body")
+  assertEqual(#resultPanelCalls.show, beforeShows + 1, label .. " displays the result in result_panel")
+  assertEqual(pasteCalls, beforePastes, label .. " does not paste")
+  assertEqual(clipboard, priorClipboard, label .. " preserves the original clipboard")
+  assertEqual(liveTimers(), 0, label .. " leaves no timers")
+end
+
+completeOrdinaryDisplayCapture("ordinary-app selectedText nil", function()
+  focusedSelection = nil
+  copyResult = "display mode Command-C capture"
+end)
+
+completeOrdinaryDisplayCapture("ordinary-app focusedElement nil", function()
+  focusedElementFailure = "nil"
+  copyResult = "focusedElement nil capture"
+end)
+
+completeOrdinaryDisplayCapture("ordinary-app focusedElement exception", function()
+  focusedElementFailure = "error"
+  copyResult = "focusedElement exception capture"
+end)
+
+resetReplaceState()
+frontmostIsPowerPoint = false
+focusedSelection = "error"
+copyFailure = "keyStroke"
+local ordinaryCopyFailureAttempts = copyAttemptCalls
+local ordinaryCopyFailureClipboard = clipboard
+local ordinaryCopyFailureCount = clipboardCount
+local ordinaryCopyFailureTasks = taskID
+local ordinaryCopyFailureRequests = requestCount()
+local ordinaryCopyFailureAlerts = #alerts
+local ordinaryCopyFailurePastes = pasteCalls
+ai.run(promptPath, model, "replace")
+if liveTimers() > 0 then fireLatestTimer() end
+assertEqual(copyAttemptCalls, ordinaryCopyFailureAttempts + 1,
+  "ordinary-app Command-C failure attempts Command-C exactly once")
+assertEqual(#alerts, ordinaryCopyFailureAlerts + 1,
+  "ordinary-app Command-C failure shows a safe error")
+assertEqual(taskID, ordinaryCopyFailureTasks,
+  "ordinary-app Command-C failure does not start the AI task")
+assertEqual(requestCount(), ordinaryCopyFailureRequests,
+  "ordinary-app Command-C failure does not start HTTP")
+assertEqual(clipboard, ordinaryCopyFailureClipboard,
+  "ordinary-app Command-C failure preserves the clipboard")
+assertEqual(clipboardCount, ordinaryCopyFailureCount,
+  "ordinary-app Command-C failure preserves the clipboard changeCount")
+assertEqual(pasteCalls, ordinaryCopyFailurePastes,
+  "ordinary-app Command-C failure does not paste")
+assertEqual(liveTimers(), 0, "ordinary-app Command-C failure leaves no timers")
+
+-- Ordinary-app Command-C fallback rejects an unchanged capture, non-text data,
+-- clipboard changes before restore, and restore failures without starting AI.
+resetReplaceState()
+frontmostIsPowerPoint = false
+focusedSelection = nil
+copyFailure = "noChange"
+local ordinaryNoChangeClipboard = clipboard
+local ordinaryNoChangeCount = clipboardCount
+local ordinaryNoChangeTasks = taskID
+local ordinaryNoChangeRequests = requestCount()
+local ordinaryNoChangeAlerts = #alerts
+ai.run(promptPath, model, "display")
+assertEqual(copyCalls, 1, "ordinary-app unchanged fallback invokes Command-C once")
+fireLatestTimer()
+assertEqual(taskID, ordinaryNoChangeTasks,
+  "ordinary-app unchanged fallback does not start the AI task")
+assertEqual(requestCount(), ordinaryNoChangeRequests,
+  "ordinary-app unchanged fallback does not start HTTP")
+assertEqual(#alerts, ordinaryNoChangeAlerts + 1,
+  "ordinary-app unchanged fallback shows a safe error")
+assertEqual(clipboard, ordinaryNoChangeClipboard,
+  "ordinary-app unchanged fallback does not overwrite the clipboard")
+assertEqual(clipboardCount, ordinaryNoChangeCount,
+  "ordinary-app unchanged fallback preserves the clipboard changeCount")
+
+resetReplaceState()
+frontmostIsPowerPoint = false
+focusedSelection = nil
+copyContentType = "public.png"
+copyResult = "PNG data"
+clipboard = "元テキスト"
+clipboardItems = {
+  ["public.utf8-plain-text"] = "元テキスト",
+  ["public.rtf"] = "{\\rtf1 元テキスト}",
+}
+clipboardContentTypes = { { "public.utf8-plain-text", "public.rtf" } }
+local ordinaryNonTextClipboard = clipboard
+local ordinaryNonTextRTF = clipboardItems["public.rtf"]
+local ordinaryNonTextTasks = taskID
+local ordinaryNonTextRequests = requestCount()
+local ordinaryNonTextAlerts = #alerts
+ai.run(promptPath, model, "display")
+fireLatestTimer()
+assertEqual(taskID, ordinaryNonTextTasks,
+  "ordinary-app non-text fallback does not start the AI task")
+assertEqual(requestCount(), ordinaryNonTextRequests,
+  "ordinary-app non-text fallback does not start HTTP")
+assertEqual(#alerts, ordinaryNonTextAlerts + 1,
+  "ordinary-app non-text fallback shows a safe error")
+assertEqual(clipboard, ordinaryNonTextClipboard,
+  "ordinary-app non-text fallback restores the original clipboard")
+assertEqual(clipboardItems["public.rtf"], ordinaryNonTextRTF,
+  "ordinary-app non-text fallback preserves the original RTF UTI data")
+
+resetReplaceState()
+frontmostIsPowerPoint = false
+focusedSelection = nil
+copyResult = "通常アプリの捕捉結果"
+local ordinaryConflictTasks = taskID
+local ordinaryConflictRequests = requestCount()
+local ordinaryConflictAlerts = #alerts
+ai.run(promptPath, model, "display")
+hs.pasteboard.setContents("外部変更")
+fireLatestTimer()
+assertEqual(taskID, ordinaryConflictTasks,
+  "ordinary-app clipboard conflict does not start the AI task")
+assertEqual(requestCount(), ordinaryConflictRequests,
+  "ordinary-app clipboard conflict does not start HTTP")
+assertEqual(#alerts, ordinaryConflictAlerts + 1,
+  "ordinary-app clipboard conflict shows a safe error")
+assertEqual(clipboard, "外部変更",
+  "ordinary-app clipboard conflict does not restore over the external change")
+
+resetReplaceState()
+frontmostIsPowerPoint = false
+focusedSelection = nil
+copyResult = "復元失敗時の捕捉結果"
+clipboard = "元テキスト"
+clipboardItems = {
+  ["public.utf8-plain-text"] = "元テキスト",
+  ["public.rtf"] = "{\\rtf1 元テキスト}",
+}
+clipboardContentTypes = { { "public.utf8-plain-text", "public.rtf" } }
+clipboardFailure = "writeAllData"
+local ordinaryRestoreFailureTasks = taskID
+local ordinaryRestoreFailureRequests = requestCount()
+local ordinaryRestoreFailureAlerts = #alerts
+ai.run(promptPath, model, "display")
+fireLatestTimer()
+assertEqual(taskID, ordinaryRestoreFailureTasks,
+  "ordinary-app restore failure does not start the AI task")
+assertEqual(requestCount(), ordinaryRestoreFailureRequests,
+  "ordinary-app restore failure does not start HTTP")
+assertEqual(#alerts, ordinaryRestoreFailureAlerts + 1,
+  "ordinary-app restore failure shows a safe error")
+assertEqual(clipboard, copyResult,
+  "ordinary-app restore failure does not overwrite the captured clipboard")
+assertEqual(writeAllDataCalls, 0,
+  "ordinary-app restore failure does not report a successful clipboard write")
 
 local function completePowerPointReplaceFallback(label, selectionValue, copiedText, bundleID)
   resetReplaceState()
