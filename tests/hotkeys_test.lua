@@ -746,6 +746,11 @@ local mainStartCalls = 0
 package.preload["hotkeys"] = function()
   return { start = function() mainStartCalls = mainStartCalls + 1 end }
 end
+local inputSourceGuardStartCalls = 0
+package.loaded["input_source_guard"] = nil
+package.preload["input_source_guard"] = function()
+  return { start = function() inputSourceGuardStartCalls = inputSourceGuardStartCalls + 1 end }
+end
 for _, name in ipairs({
   "actions.ai_commands", "actions.app_launcher",
   "actions.window_management", "actions.utility_command", "actions.url_commands", "components.hud",
@@ -759,9 +764,12 @@ preloadedHotkeys.start()
 preloadedHotkeys.start()
 local mainChunk = assert(loadfile("./main.lua"))
 local callsBeforeMain = mainStartCalls
+local inputSourceGuardCallsBeforeMain = inputSourceGuardStartCalls
 _G.hs.hotkey.bind = function() error("main must not register hotkeys outside hotkeys.start") end
 local mainOK, mainError = pcall(mainChunk)
-assertEqual(mainOK, true, "main.lua starts through hotkeys.start only: " .. tostring(mainError))
+assertEqual(mainOK, true, "main.lua starts through entrypoint modules only: " .. tostring(mainError))
 assertEqual(mainStartCalls - callsBeforeMain, 1, "main invokes hotkeys.start exactly once")
+assertEqual(inputSourceGuardStartCalls - inputSourceGuardCallsBeforeMain, 1,
+  "main invokes input_source_guard.start exactly once")
 
 print("hotkeys_test: ok")
