@@ -1,4 +1,5 @@
 local M = {}
+local textInput = require("components.text_input")
 
 local GOOGLE_URL = "https://www.google.com/search?q="
 local DICTIONARY_URL = "mkdictionaries:///?text="
@@ -26,45 +27,44 @@ local function encodeQuery(value)
 end
 
 local function selectedText()
-  if not hs.uielement or type(hs.uielement.focusedElement) ~= "function" then
+  local result = textInput.acquireSelection()
+  if result.status == "error" then
     alert("検索語を取得できませんでした。")
     return nil, false
   end
-  local focusedOK, focused = pcall(hs.uielement.focusedElement)
-  if not focusedOK then
+  if result.status == "no_focused_element" or result.status == "no_selection" then
+    return nil, true
+  end
+  if result.status ~= "selected" then
     alert("検索語を取得できませんでした。")
     return nil, false
   end
-  if focused == nil then return nil, true end
-  if type(focused.selectedText) ~= "function" then
-    alert("検索語を取得できませんでした。")
-    return nil, false
-  end
-  local selectedOK, value = pcall(focused.selectedText, focused)
-  if not selectedOK or (value ~= nil and type(value) ~= "string") then
-    alert("検索語を取得できませんでした。")
-    return nil, false
-  end
-  if value == nil or trimmed(value) == "" then return nil, true end
-  return trimmed(value), true
+
+  local value = trimmed(result.text)
+  if value == "" then return nil, true end
+  return value, true
 end
 
 local function inputText()
-  if not hs.dialog or type(hs.dialog.textPrompt) ~= "function" then
+  local result = textInput.prompt({
+    title = "検索",
+    message = "検索語を入力してください。",
+    defaultText = "",
+    submitButton = "OK",
+  })
+  if result.status == "error" then
     alert("検索語を入力できませんでした。")
     return nil
   end
-  local ok, button, value = pcall(hs.dialog.textPrompt, "検索", "検索語を入力してください。", "", "OK")
-  if not ok then
-    alert("検索語を入力できませんでした。")
-    return nil
-  end
-  value = trimmed(value)
-  if button ~= "OK" or value == "" then
+  if result.status == "cancelled" or result.status == "empty" then
     alert("検索をキャンセルしました。")
     return nil
   end
-  return value
+  if result.status ~= "submitted" then
+    alert("検索語を入力できませんでした。")
+    return nil
+  end
+  return result.text
 end
 
 function M.run(command)

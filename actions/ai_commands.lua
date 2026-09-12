@@ -1,6 +1,7 @@
 local M = {}
 local hud = require("components.hud")
 local resultPanel = require("components.result_panel")
+local textInput = require("components.text_input")
 
 local keychainService = "my.gemini-api.hammerspoon"
 local keychainTimeout = 10
@@ -97,18 +98,15 @@ function M.stop()
   pcall(resultPanel.stop)
 end
 
-local function focusedElement()
-  if not hs.uielement or not hs.uielement.focusedElement then return nil, false end
-  local focusedOK, focused = pcall(hs.uielement.focusedElement)
-  return focused, focusedOK and focused ~= nil
-end
-
 local function acquireSelection()
-  local focused, focusedOK = focusedElement()
-  if not focusedOK then return nil, false end
-  local selectedOK, selection = pcall(function() return focused:selectedText() end)
-  if not selectedOK or selection == nil then return nil, false end
-  return selection, true, focused
+  local result = textInput.acquireSelection()
+  if result.status == "selected" then
+    return result.text, true, result.element
+  end
+  if result.status == "error" and result.reason == "invalid_type" then
+    return result.value, true, result.element
+  end
+  return nil, false
 end
 
 local editableRoles = {
@@ -471,11 +469,17 @@ local function runClipboardFallback(promptPath, model, _mode, modelFailover, tar
 end
 
 runPrompt = function(promptPath, model, modelFailover)
-  local button, input = hs.dialog.textPrompt("Gemini AI command", "Geminiへ渡すテキストを入力してください。", "", "実行", "キャンセル")
-  if button ~= "実行" then return end
-  input = trim(input)
-  if input == "" then showMessage("入力テキストが空です。"); return end
-  runCommand(promptPath, model, "display", input, nil, nil, modelFailover)
+  local result = textInput.prompt({
+    title = "Gemini AI command",
+    message = "Geminiへ渡すテキストを入力してください。",
+    defaultText = "",
+    submitButton = "実行",
+    cancelButton = "キャンセル",
+  })
+  if result.status == "cancelled" then return end
+  if result.status == "empty" then showMessage("入力テキストが空です。"); return end
+  if result.status ~= "submitted" then showSafeError(); return end
+  runCommand(promptPath, model, "display", result.text, nil, nil, modelFailover)
 end
 
 runCommand = function(promptPath, model, mode, input, target, priorSnapshot, modelFailover)
