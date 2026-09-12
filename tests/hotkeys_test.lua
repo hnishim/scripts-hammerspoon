@@ -159,11 +159,10 @@ local expected = {
 
 local apps = {
   { "a", "Microsoft Teams" }, { "b", "Arc" }, { "c", "Ferdium" },
-  { "d", "Cogito" }, { "e", "Cursor" }, { "f", "Finder" },
+  { "e", "Cursor" }, { "f", "Finder" },
   { "i", "ChatGPT" }, { "j", "Dictionaries" }, { "k", "Linear" },
   { "m", "Meru" }, { "n", "Notion" }, { "p", "Microsoft PowerPoint" },
-  { "r", "Reminders" }, { "s", "Slack" }, { "t", "Warp" },
-  { "w", "1Password" }, { "x", "Microsoft Excel" }, { "z", "zoom.us" },
+  { "s", "Slack" }, { "w", "1Password" }, { "z", "zoom.us" },
 }
 for _, appBinding in ipairs(apps) do
   expected[#expected + 1] = {
@@ -204,7 +203,7 @@ expected[#expected + 1] = {
   action = { type = "utility", executablePath = "/bin/bash", scriptPath = raycastRoot .. "title-case-chicago.sh" },
 }
 local expectedCount = #expected
-assertEqual(expectedCount, 32, "test expectation contains the current 32 bindings")
+assertEqual(expectedCount, 28, "test expectation contains the current 28 bindings")
 local expectedFileNameCopy = {
   modifiers = { "cmd", "shift" }, key = "c",
   action = { type = "file_name_copy" },
@@ -337,7 +336,7 @@ assert(type(hotkeys.getLastError) == "function", "hotkeys.getLastError() must be
 local firstStartOK, firstStartResult = pcall(hotkeys.start)
 assertEqual(firstStartOK, true, "first hotkeys start completes without error")
 assertEqual(firstStartResult, true, "first hotkeys start succeeds")
-assertEqual(#bindCalls, expectedCount, "first start registers 32 regular hotkeys")
+assertEqual(#bindCalls, expectedCount, "first start registers 28 regular hotkeys")
 assertEqual(bindAttempts, expectedCount, "first start attempts the expected number of binds")
 assertEqual(#eventTapCalls, 1, "first start registers one event tap")
 assertEqual(eventTapCalls[1].started, true, "first event tap starts")
@@ -424,10 +423,10 @@ end
 
 local aiIndex = configIndexFor(expected[1])
 local appIndex = configIndexFor(expected[4])
-local windowIndex = configIndexFor(expected[22])
-local urlIndex = configIndexFor(expected[28])
-local previousIndex = configIndexFor(expected[30])
-local utilityIndex = configIndexFor(expected[31])
+local windowIndex = configIndexFor(expected[18])
+local urlIndex = configIndexFor(expected[24])
+local previousIndex = configIndexFor(expected[26])
+local utilityIndex = configIndexFor(expected[27])
 local fileNameCopyIndex = configIndexFor(expectedFileNameCopy)
 
 local changedAI = copyBinding(config[aiIndex])
@@ -455,15 +454,15 @@ config[utilityIndex] = changedUtility
 local changedStartOK, changedStartResult = pcall(hotkeys.start)
 assertEqual(changedStartOK, true, "configuration-only changes reload without error")
 assertEqual(changedStartResult, true, "configuration-only changes reload successfully")
-assertEqual(#bindCalls, expectedCount * 3, "configuration-only changes register 32 regular hotkeys")
+assertEqual(#bindCalls, expectedCount * 3, "configuration-only changes register 28 regular hotkeys")
 assertEqual(#eventTapCalls, 3, "configuration-only changes register one event tap")
 local changedExpected = {}
 for index, binding in ipairs(expected) do changedExpected[index] = binding end
 changedExpected[1] = changedAI
 changedExpected[4] = changedApp
-changedExpected[22] = changedWindow
-changedExpected[28] = changedURL
-changedExpected[31] = changedUtility
+changedExpected[18] = changedWindow
+changedExpected[24] = changedURL
+changedExpected[27] = changedUtility
 assertRegisteredBindings(changedExpected, expectedCount * 2 + 1)
 clearActionCalls()
 handles[signature(changedAI.modifiers, changedAI.key)].callback()
@@ -694,14 +693,14 @@ assertFailedRegistrationCleaned(false, "eventtap.new failure")
 local recoveredAfterNewFailureOK, recoveredAfterNewFailureResult = pcall(hotkeys.start)
 assertEqual(recoveredAfterNewFailureOK, true, "start recovers after eventtap.new failure")
 assertEqual(recoveredAfterNewFailureResult, true, "start succeeds after eventtap.new failure")
-assertEqual(#bindCalls, expectedCount * 6, "recovery after eventtap.new failure binds 32 regular hotkeys")
+assertEqual(#bindCalls, expectedCount * 6, "recovery after eventtap.new failure binds 28 regular hotkeys")
 assertEqual(#eventTapCalls, 5, "recovery after eventtap.new failure registers one event tap")
 
 assertFailedRegistrationCleaned(true, "eventtap start failure")
 local recoveredAfterStartFailureOK, recoveredAfterStartFailureResult = pcall(hotkeys.start)
 assertEqual(recoveredAfterStartFailureOK, true, "start recovers after eventtap start failure")
 assertEqual(recoveredAfterStartFailureResult, true, "start succeeds after eventtap start failure")
-assertEqual(#bindCalls, expectedCount * 8, "recovery after eventtap start failure binds 32 regular hotkeys")
+assertEqual(#bindCalls, expectedCount * 8, "recovery after eventtap start failure binds 28 regular hotkeys")
 assertEqual(#eventTapCalls, 7, "recovery after eventtap start failure registers one event tap")
 
 -- A valid configuration may bind partially, but every newly returned handle is
