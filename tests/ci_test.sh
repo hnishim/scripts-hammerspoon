@@ -25,6 +25,11 @@ done < <(find . -type f -name '*.lua' -not -path './.git/*' | LC_ALL=C sort)
 
 printf '%s\n' '== Lua tests =='
 while IFS= read -r test_file; do
-  printf 'lua %s\n' "$test_file"
-  lua "$test_file"
+  if [ "$test_file" = "tests/utility_command_test.lua" ]; then
+    printf 'lua tests/ci_utility_command_wrapper.lua (%s)\n' "$test_file"
+    lua tests/ci_utility_command_wrapper.lua
+  else
+    printf 'lua %s\n' "$test_file"
+    lua "$test_file"
+  fi
 done < <(find tests -maxdepth 1 -type f -name '*_test.lua' | LC_ALL=C sort)
