@@ -28,7 +28,7 @@ function M.acquireSelection()
     return { status = "no_selection", element = focused }
   end
   if type(value) ~= "string" then
-    return { status = "error", reason = "invalid_type", element = focused }
+    return { status = "error", reason = "invalid_type", value = value, element = focused }
   end
 
   return { status = "selected", text = value, element = focused }
