@@ -1,10 +1,13 @@
 local M = {}
+local hud = require("components.hud")
 
 local runningTasks = {}
 local taskSequence = 0
 
 local function showError()
-  if hs.alert and hs.alert.show then pcall(hs.alert.show, "コマンドを実行できませんでした。", 2) end
+  if type(hud) == "table" and type(hud.showTransient) == "function" then
+    pcall(hud.showTransient, "Command failed.", 2)
+  end
 end
 
 local function readableFile(path)
