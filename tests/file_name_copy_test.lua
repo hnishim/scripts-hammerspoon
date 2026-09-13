@@ -116,8 +116,8 @@ end
 
 _G.hs = {
   alert = {
-    show = function(message)
-      alerts[#alerts + 1] = message
+    show = function()
+      error("file_name_copy must not use hs.alert directly")
     end,
   },
   application = {
@@ -229,7 +229,11 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 package.preload["components.hud"] = function()
   return {
     showTransient = function(message, seconds)
-      hudNotifications[#hudNotifications + 1] = { message = message, seconds = seconds }
+      if message == "Copied" then
+        hudNotifications[#hudNotifications + 1] = { message = message, seconds = seconds }
+      else
+        alerts[#alerts + 1] = message
+      end
       return true
     end,
   }
@@ -358,7 +362,7 @@ assertEqual(action.run(), false, "Cursor missing focus is rejected")
 assertEqual(pasteboard.contents, "before", "Cursor missing focus preserves clipboard")
 assertEqual(pasteboard.changeCount, missingFocusChangeCount,
   "Cursor missing focus preserves changeCount")
-assertEqual(#hudNotifications, priorNotifications, "Cursor missing focus has no HUD")
+assertEqual(#hudNotifications, priorNotifications, "Cursor missing focus has no success HUD")
 assertEqual(timerCalls, 0, "Cursor missing focus does not schedule a timer")
 
 resetClipboard()
@@ -369,7 +373,7 @@ priorNotifications = #hudNotifications
 assertEqual(action.run(), false, "Cursor Explorer missing path is rejected")
 assertEqual(pasteboard.changeCount, missingPathChangeCount,
   "Cursor Explorer missing path preserves clipboard")
-assertEqual(#hudNotifications, priorNotifications, "Cursor Explorer missing path has no HUD")
+assertEqual(#hudNotifications, priorNotifications, "Cursor Explorer missing path has no success HUD")
 
 for _, mode in ipairs({ "cursorError", "cursorReturn" }) do
   resetClipboard()
@@ -385,7 +389,7 @@ for _, mode in ipairs({ "cursorError", "cursorReturn" }) do
     "Cursor API " .. mode .. " preserves clipboard changeCount")
   assertEqual(#hudNotifications, priorNotifications,
     "Cursor API " .. mode .. " has no success HUD")
-  assertEqual(#alerts, priorAlerts + 1, "Cursor API " .. mode .. " shows one alert")
+  assertEqual(#alerts, priorAlerts + 1, "Cursor API " .. mode .. " shows one error HUD")
 end
 
 -- Target and API boundaries.
@@ -403,7 +407,7 @@ frontmostName = "Finder"
 finderSelection = {}
 priorNotifications = #hudNotifications
 assertEqual(action.run(), false, "empty Finder selection is rejected")
-assertEqual(#hudNotifications, priorNotifications, "empty Finder selection has no HUD")
+assertEqual(#hudNotifications, priorNotifications, "empty Finder selection has no success HUD")
 
 local savedOSAScript = hs.osascript
 hs.osascript = nil
@@ -411,7 +415,7 @@ resetClipboard()
 frontmostName = "Finder"
 priorNotifications = #hudNotifications
 assertEqual(action.run(), false, "missing Finder API is rejected")
-assertEqual(#hudNotifications, priorNotifications, "missing Finder API has no HUD")
+assertEqual(#hudNotifications, priorNotifications, "missing Finder API has no success HUD")
 hs.osascript = savedOSAScript
 
 for _, mode in ipairs({ "finderError", "finderReturn" }) do
@@ -421,8 +425,8 @@ for _, mode in ipairs({ "finderError", "finderReturn" }) do
   local priorAlerts = #alerts
   priorNotifications = #hudNotifications
   assertEqual(action.run(), false, "Finder API " .. mode .. " is rejected")
-  assertEqual(#hudNotifications, priorNotifications, "Finder API " .. mode .. " has no HUD")
-  assertEqual(#alerts, priorAlerts + 1, "Finder API " .. mode .. " shows one alert")
+  assertEqual(#hudNotifications, priorNotifications, "Finder API " .. mode .. " has no success HUD")
+  assertEqual(#alerts, priorAlerts + 1, "Finder API " .. mode .. " shows one error HUD")
 end
 
 resetClipboard()
@@ -431,14 +435,14 @@ local savedAllContentTypes = hs.pasteboard.allContentTypes
 hs.pasteboard.allContentTypes = nil
 priorNotifications = #hudNotifications
 assertEqual(action.run(), false, "missing backup API aborts before Cursor access")
-assertEqual(#hudNotifications, priorNotifications, "missing backup API has no HUD")
+assertEqual(#hudNotifications, priorNotifications, "missing backup API has no success HUD")
 hs.pasteboard.allContentTypes = savedAllContentTypes
 
 resetClipboard()
 pasteboard.types = { { "public.utf8-plain-text" }, { "public.utf8-plain-text" } }
 priorNotifications = #hudNotifications
 assertEqual(action.run(), false, "multiple clipboard items abort safely")
-assertEqual(#hudNotifications, priorNotifications, "multiple clipboard items have no HUD")
+assertEqual(#hudNotifications, priorNotifications, "multiple clipboard items have no success HUD")
 
 for _, mode in ipairs({ "readAllData", "allContentTypes" }) do
   resetClipboard()
@@ -446,7 +450,7 @@ for _, mode in ipairs({ "readAllData", "allContentTypes" }) do
   failureMode = mode
   priorNotifications = #hudNotifications
   assertEqual(action.run(), false, "clipboard " .. mode .. " failure aborts safely")
-  assertEqual(#hudNotifications, priorNotifications, "clipboard " .. mode .. " failure has no HUD")
+  assertEqual(#hudNotifications, priorNotifications, "clipboard " .. mode .. " failure has no success HUD")
 end
 
 -- Invalid paths never become a successful clipboard value.
@@ -459,7 +463,7 @@ assertEqual(action.run(), false, "malformed Cursor document is rejected")
 assertEqual(pasteboard.contents, "before", "malformed Cursor document preserves clipboard")
 assertEqual(pasteboard.changeCount, malformedChangeCount,
   "malformed Cursor document preserves changeCount")
-assertEqual(#hudNotifications, priorNotifications, "malformed Cursor document has no HUD")
+assertEqual(#hudNotifications, priorNotifications, "malformed Cursor document has no success HUD")
 
 -- A failed final write restores all original UTI data safely.
 resetClipboard()
@@ -483,8 +487,8 @@ assertEqual(pasteboardWrites[1]["public.utf16-external-plain-text"],
   beforeData["public.utf16-external-plain-text"], "UTI restoration preserves non-text data")
 assertEqual(pasteboardWrites[1]["public.data"], beforeData["public.data"],
   "UTI restoration preserves raw data")
-assertEqual(#hudNotifications, priorNotifications, "final write failure has no HUD")
-assertEqual(#alerts, priorAlerts + 1, "final write failure shows one alert")
+assertEqual(#hudNotifications, priorNotifications, "final write failure has no success HUD")
+assertEqual(#alerts, priorAlerts + 1, "final write failure shows one error HUD")
 
 resetClipboard()
 frontmostName = "Cursor"
@@ -506,8 +510,8 @@ assertEqual(pasteboardWrites[1]["public.utf16-external-plain-text"], "before-utf
   "false final write preserves non-text data")
 assertEqual(pasteboardWrites[1]["public.data"], "raw-before",
   "false final write preserves raw data")
-assertEqual(#hudNotifications, priorNotifications, "false final write has no HUD")
-assertEqual(#alerts, priorAlerts + 1, "false final write shows one alert")
+assertEqual(#hudNotifications, priorNotifications, "false final write has no success HUD")
+assertEqual(#alerts, priorAlerts + 1, "false final write shows one error HUD")
 
 for _, mode in ipairs({ "restoreWriteAllData", "restoreWriteAllDataFalse" }) do
   resetClipboard()
@@ -517,10 +521,10 @@ for _, mode in ipairs({ "restoreWriteAllData", "restoreWriteAllDataFalse" }) do
   priorNotifications = #hudNotifications
   assertEqual(action.run(), false, "Cursor " .. mode .. " is reported")
   assertEqual(pasteboard.contents, "before", "failed restoration preserves original clipboard")
-  assertEqual(#hudNotifications, priorNotifications, "failed restoration has no HUD")
-  assertEqual(#alerts, priorRestoreAlerts + 1, "failed restoration shows one alert")
-  assertEqual(alerts[#alerts], "クリップボードを復元できませんでした。",
-    "failed restoration alert message")
+  assertEqual(#hudNotifications, priorNotifications, "failed restoration has no success HUD")
+  assertEqual(#alerts, priorRestoreAlerts + 1, "failed restoration shows one error HUD")
+  assertEqual(alerts[#alerts], "Could not restore the clipboard.",
+    "failed restoration HUD message")
 end
 
 -- An external clipboard writer wins the race and is never overwritten or restored.
@@ -535,8 +539,8 @@ assertEqual(pasteboard.contents, "/Users/external/important.txt",
   "Cursor clipboard conflict preserves current value")
 assert(pasteboard.changeCount > conflictChangeCount, "Cursor clipboard conflict changes the current count")
 assertEqual(#pasteboardWrites, 0, "Cursor clipboard conflict does not write or restore")
-assertEqual(#hudNotifications, priorNotifications, "Cursor clipboard conflict has no HUD")
-assertEqual(#alerts, priorAlerts + 1, "Cursor clipboard conflict shows one alert")
+assertEqual(#hudNotifications, priorNotifications, "Cursor clipboard conflict has no success HUD")
+assertEqual(#alerts, priorAlerts + 1, "Cursor clipboard conflict shows one error HUD")
 
 -- Empty clipboard restoration uses clearContents and retains the no-menu contract.
 resetClipboard()
@@ -550,7 +554,7 @@ priorNotifications = #hudNotifications
 assertEqual(action.run(), false, "empty clipboard final write failure is reported")
 assertEqual(pasteboard.contents, nil, "empty clipboard restoration clears contents")
 assertEqual(clearContentsCalls, 1, "empty restoration uses clearContents")
-assertEqual(#hudNotifications, priorNotifications, "empty restoration has no HUD")
+assertEqual(#hudNotifications, priorNotifications, "empty restoration has no success HUD")
 
 for _, mode in ipairs({ "restoreClearContents", "restoreClearContentsFalse" }) do
   resetClipboard()
@@ -563,9 +567,9 @@ for _, mode in ipairs({ "restoreClearContents", "restoreClearContentsFalse" }) d
   local priorEmptyRestoreAlerts = #alerts
   assertEqual(action.run(), false, "empty clipboard " .. mode .. " is reported")
   assertEqual(pasteboard.contents, nil, "failed empty restoration preserves empty clipboard")
-  assertEqual(#alerts, priorEmptyRestoreAlerts + 1, "failed empty restoration shows one alert")
-  assertEqual(alerts[#alerts], "クリップボードを復元できませんでした。",
-    "failed empty restoration alert message")
+  assertEqual(#alerts, priorEmptyRestoreAlerts + 1, "failed empty restoration shows one error HUD")
+  assertEqual(alerts[#alerts], "Could not restore the clipboard.",
+    "failed empty restoration HUD message")
 end
 
 print("file_name_copy_test: ok")
