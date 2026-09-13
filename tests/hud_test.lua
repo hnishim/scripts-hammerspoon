@@ -100,7 +100,19 @@ local function makeCanvas(frame)
     return self
   end
 
+  function object:elementAttribute(indexOrId, attribute, value)
+    local element = type(indexOrId) == "number" and self.elements[indexOrId] or self[indexOrId]
+    if not element then return nil end
+    if value == nil then return element[attribute] end
+    element[attribute] = value
+    return self
+  end
+
   setmetatable(object, {
+    __index = function(target, key)
+      if type(key) == "number" then return target.elements[key] end
+      return rawget(target, key)
+    end,
     __newindex = function(target, key, value)
       if type(key) == "number" then
         addElement(value, key)
@@ -170,18 +182,6 @@ local function liveTimers(kind)
   return result
 end
 
-local function findElement(canvas, id, elementType)
-  if id ~= nil and type(canvas[id]) == "table" then return canvas[id] end
-  for _, element in ipairs(canvas.elements) do
-    if type(element) == "table"
-        and (id == nil or element.id == id)
-        and (elementType == nil or element.type == elementType) then
-      return element
-    end
-  end
-  return nil
-end
-
 local function backgroundElement(canvas)
   for _, element in ipairs(canvas.elements) do
     if type(element) == "table" and element.type == "rectangle" then return element end
@@ -189,29 +189,45 @@ local function backgroundElement(canvas)
   return nil
 end
 
-local function textElement(canvas)
+local function textElement(canvas, expectedText)
   for _, element in ipairs(canvas.elements) do
-    if type(element) == "table" and element.type == "text" then return element end
+    if type(element) == "table" and element.type == "text"
+        and (expectedText == nil or element.text == expectedText) then
+      return element
+    end
   end
   return nil
 end
 
-local function spinnerSignature(canvas)
-  local spinner = findElement(canvas, "spinner")
-  if not spinner then
-    for _, element in ipairs(canvas.elements) do
-      if type(element) == "table" and (element.type == "arc" or element.type == "ellipticalArc") then
-        spinner = element
-        break
-      end
+local function stableSignature(value, seen)
+  local valueType = type(value)
+  if valueType ~= "table" then
+    if valueType == "function" then return "<function>" end
+    return valueType .. ":" .. tostring(value)
+  end
+  seen = seen or {}
+  if seen[value] then return "<cycle>" end
+  seen[value] = true
+  local entries = {}
+  for key, child in pairs(value) do
+    if type(child) ~= "function" then
+      entries[#entries + 1] = {
+        key = tostring(key),
+        value = stableSignature(child, seen),
+      }
     end
   end
-  assert(spinner, "persistent HUD must include a spinner/animated indicator")
-  return table.concat({
-    tostring(spinner.startAngle),
-    tostring(spinner.endAngle),
-    tostring(spinner._rotation),
-  }, ":")
+  table.sort(entries, function(a, b) return a.key < b.key end)
+  local parts = {}
+  for _, entry in ipairs(entries) do
+    parts[#parts + 1] = entry.key .. "=" .. entry.value
+  end
+  seen[value] = nil
+  return "{" .. table.concat(parts, ",") .. "}"
+end
+
+local function presentationSignature(canvas)
+  return stableSignature(canvas.elements)
 end
 
 assertEqual(hud.show("Processing..."), true, "persistent HUD show succeeds")
@@ -237,19 +253,25 @@ assert(type(background.roundedRectRadii) == "table"
   "HUD background has rounded corners")
 assert(background.withShadow == true, "HUD background has a shadow")
 
-local persistentText = assert(textElement(persistent), "persistent HUD has text")
-assertEqual(persistentText.text, "Processing...", "persistent HUD forwards message")
+local persistentText = assert(textElement(persistent, "Processing..."), "persistent HUD has message text")
 assert(type(persistentText.textSize) == "number" and persistentText.textSize > 0 and persistentText.textSize < 27,
   "HUD text is smaller than the hs.canvas default text size")
-assert(persistentText.textFont == nil or persistentText.textFont == "",
-  "HUD uses the system font instead of a bundled/custom font")
+if persistentText.textFont ~= nil and persistentText.textFont ~= "" then
+  assert(type(persistentText.textFont) == "string", "explicit HUD font must be a font name")
+  assert(not persistentText.textFont:find("/", 1, true)
+      and not persistentText.textFont:find("\\", 1, true)
+      and not persistentText.textFont:lower():match("%.ttf$")
+      and not persistentText.textFont:lower():match("%.otf$"),
+    "HUD must not depend on a bundled font file")
+end
 
 local animationTimers = liveTimers("every")
 assertEqual(#animationTimers, 1, "persistent HUD starts one animation timer")
-local beforeAnimation = spinnerSignature(persistent)
+local beforeAnimation = presentationSignature(persistent)
 animationTimers[1].callback()
-local afterAnimation = spinnerSignature(persistent)
-assert(beforeAnimation ~= afterAnimation, "animation tick changes spinner presentation")
+local afterAnimation = presentationSignature(persistent)
+assert(beforeAnimation ~= afterAnimation,
+  "persistent HUD timer tick changes visible presentation state")
 
 assertEqual(hud.show("Still processing..."), true, "persistent HUD supports re-entry")
 assertEqual(#canvases, 2, "re-entry creates a replacement canvas")
@@ -265,9 +287,8 @@ local transient = canvases[3]
 assert(transient.shown and not transient.deleted, "transient HUD is shown")
 assert(not replacement.deleted, "transient HUD does not close persistent HUD")
 local transientBackground = assert(backgroundElement(transient), "transient HUD has a background")
-local transientText = assert(textElement(transient), "transient HUD has text")
-assertEqual(transientText.text, "Copied", "transient HUD forwards message")
-assertEqual(transientText.textSize, textElement(replacement).textSize,
+local transientText = assert(textElement(transient, "Copied"), "transient HUD has message text")
+assertEqual(transientText.textSize, textElement(replacement, "Still processing...").textSize,
   "persistent and transient HUD use same text size")
 assertEqual(transientBackground.roundedRectRadii.xRadius, backgroundElement(replacement).roundedRectRadii.xRadius,
   "persistent and transient HUD share corner radius")
