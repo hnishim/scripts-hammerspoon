@@ -122,11 +122,10 @@ assertTableEqual(launchCalls, { "Arc" }, "failed launch still attempts launchOrF
 assertTableEqual(hudEvents, {
   "show:Launching Arc...",
   "launch:Arc",
-}, "failed launch leaves transient HUD lifecycle to hs.alert")
-assertTableEqual(hudDurations, { 2 }, "failed launch HUD duration")
-assertEqual(#alertCalls, 1, "failed launch should show one alert")
-assertEqual(alertCalls[1].message, "コマンドを実行できませんでした。", "failed launch alert format")
-assertEqual(alertCalls[1].seconds, 2, "failed launch alert duration")
+  "show:Command failed.",
+}, "failed launch uses the shared HUD for launch and failure")
+assertTableEqual(hudDurations, { 2, 2 }, "failed launch HUD durations")
+assertEqual(#alertCalls, 0, "failed launch must not use direct hs.alert")
 
 local invalidApps = {
   { name = "空文字列", app = "" },
@@ -148,9 +147,10 @@ assertTableEqual(launchCalls, { "Missing App" }, "missing app failure is passed 
 assertTableEqual(hudEvents, {
   "show:Launching Missing App...",
   "launch:Missing App",
-}, "missing app failure still cleans up HUD")
-assertTableEqual(hudDurations, { 2 }, "missing app failure HUD duration")
-assertEqual(#alertCalls, 1, "missing app failure shows one error notification")
+  "show:Command failed.",
+}, "missing app failure uses shared HUD for the error")
+assertTableEqual(hudDurations, { 2, 2 }, "missing app failure HUD durations")
+assertEqual(#alertCalls, 0, "missing app failure must not use direct hs.alert")
 
 resetObservedState()
 appLauncher.run("Slack")
