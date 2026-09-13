@@ -107,7 +107,12 @@ struct AXSnapshot {
     let selectedRange: CFRange?
     let fullValue: String?
     let clipboardSelection: String?
-    var hasSelectionContext: Bool { selectedText != nil || clipboardSelection != nil }
+    var hasSelectionContext: Bool {
+        if let range = selectedRange, range.length > 0 { return true }
+        if let selectedText, !selectedText.isEmpty { return true }
+        if let clipboardSelection, !clipboardSelection.isEmpty { return true }
+        return false
+    }
 }
 
 struct AttemptLog: Codable {

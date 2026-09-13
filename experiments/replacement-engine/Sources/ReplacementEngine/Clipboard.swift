@@ -44,7 +44,12 @@ final class ClipboardTransaction {
 
     func writeReplacement(_ text: String) throws {
         pasteboard.clearContents()
-        guard pasteboard.setString(text, forType: .string) else { throw EngineError.clipboardUnavailable("failed to write replacement text") }
+        let afterClear = pasteboard.changeCount
+        helperWriteChangeCount = afterClear
+        guard pasteboard.setString(text, forType: .string) else {
+            if pasteboard.changeCount != afterClear { helperWriteChangeCount = nil }
+            throw EngineError.clipboardUnavailable("failed to write replacement text")
+        }
         helperWriteChangeCount = pasteboard.changeCount
     }
 

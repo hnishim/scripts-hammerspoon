@@ -39,12 +39,12 @@ final class ReplacementEngine {
                 case .error: final = .error; finalStrategy = strategy; reason = result.reason
                 case .noOp, .unavailable, .skipped: continue
                 }
-                try finish(totalStart, bundle, order, final, finalStrategy, reason); emitOutcome(final, strategy: finalStrategy, reason: reason); return final
+                finish(totalStart, bundle, order, final, finalStrategy, reason); emitOutcome(final, strategy: finalStrategy, reason: reason); return final
             }
             final = .notReplaced; reason = "all_strategies_exhausted_without_mutation"
         } catch let error as EngineError { final = .error; reason = sanitize(error.description) }
         catch { final = .error; reason = "unexpected_error" }
-        try? finish(totalStart, bundle, order, final, finalStrategy, reason); emitOutcome(final, strategy: finalStrategy, reason: reason); return final
+        finish(totalStart, bundle, order, final, finalStrategy, reason); emitOutcome(final, strategy: finalStrategy, reason: reason); return final
     }
 
     private func strategyOrder() -> [Strategy] {
@@ -86,7 +86,9 @@ final class ReplacementEngine {
     }
 
     private func paste(_ capture: AXSnapshot, matchStyle: Bool) throws -> StrategyResult {
-        let transaction = try ClipboardTransaction(); try transaction.writeReplacement(replacement); defer { _ = transaction.restoreIfUntouched() }
+        let transaction = try ClipboardTransaction()
+        defer { _ = transaction.restoreIfUntouched() }
+        try transaction.writeReplacement(replacement)
         let flags: CGEventFlags = matchStyle ? [.maskCommand, .maskAlternate, .maskShift] : .maskCommand
         try KeyEvents.chord(keyCode: CGKeyCode(kVK_ANSI_V), flags: flags)
         return verifyEvent(capture, matchStyle ? "exact_postcondition_after_match_style" : "exact_postcondition_after_paste", matchStyle ? "match_style_dispatched_postcondition_unverified" : "paste_dispatched_postcondition_unverified")
@@ -94,20 +96,24 @@ final class ReplacementEngine {
 
     private func unicode(_ capture: AXSnapshot, chunked: Bool) throws -> StrategyResult {
         if chunked {
-            let units = Array(replacement.utf16); var cursor = 0
-            while cursor < units.count {
-                let end = min(cursor + options.chunkSize, units.count); try KeyEvents.unicode(String(decoding: units[cursor..<end], as: UTF16.self)); cursor = end
-                if cursor < units.count && options.chunkDelayMilliseconds > 0 { Thread.sleep(forTimeInterval: Double(options.chunkDelayMilliseconds) / 1000.0) }
+            let characters = Array(replacement); var cursor = 0
+            while cursor < characters.count {
+                let end = min(cursor + options.chunkSize, characters.count); try KeyEvents.unicode(String(characters[cursor..<end])); cursor = end
+                if cursor < characters.count && options.chunkDelayMilliseconds > 0 { Thread.sleep(forTimeInterval: Double(options.chunkDelayMilliseconds) / 1000.0) }
             }
         } else { try KeyEvents.unicode(replacement) }
         return verifyEvent(capture, chunked ? "exact_postcondition_after_chunked_injection" : "exact_postcondition_after_unicode_injection", chunked ? "chunked_injection_dispatched_postcondition_unverified" : "unicode_injection_dispatched_postcondition_unverified")
     }
 
     private func verifySync(_ element: AXUIElement, _ expected: ExpectedState, _ success: String, _ noOp: String) -> StrategyResult {
-        let observed = AX.stringAttribute(element, kAXValueAttribute as CFString)
-        if observed == expected.expected { return StrategyResult(outcome: .verified, verification: "exact_ax_value", reason: success) }
-        if observed == expected.original { return StrategyResult(outcome: .noOp, verification: "exact_unchanged", reason: noOp) }
-        return StrategyResult(outcome: .dispatchedUnverified, verification: "mismatch_or_unreadable", reason: "ax_mutation_result_unverified")
+        let deadline = Date().addingTimeInterval(Double(options.verificationTimeoutMilliseconds) / 1000.0)
+        while true {
+            guard let observed = AX.stringAttribute(element, kAXValueAttribute as CFString) else { return StrategyResult(outcome: .dispatchedUnverified, verification: "mismatch_or_unreadable", reason: "ax_mutation_result_unverified") }
+            if observed == expected.expected { return StrategyResult(outcome: .verified, verification: "exact_ax_value", reason: success) }
+            if observed != expected.original { return StrategyResult(outcome: .dispatchedUnverified, verification: "mismatch_or_unreadable", reason: "ax_mutation_result_unverified") }
+            if Date() >= deadline { return StrategyResult(outcome: .noOp, verification: "exact_unchanged_bounded_poll", reason: noOp) }
+            Thread.sleep(forTimeInterval: Double(options.pollIntervalMilliseconds) / 1000.0)
+        }
     }
 
     private func verifyEvent(_ capture: AXSnapshot, _ success: String, _ unverified: String) -> StrategyResult {
@@ -120,7 +126,11 @@ final class ReplacementEngine {
         return StrategyResult(outcome: .dispatchedUnverified, verification: "bounded_poll_no_exact_match", reason: unverified)
     }
 
-    private func finish(_ start: DispatchTime, _ bundle: String, _ order: [Strategy], _ outcome: ReplacementOutcome, _ strategy: Strategy?, _ reason: String) throws {
-        try logger.append(RunLog(timestamp: ISO8601DateFormatter().string(from: Date()), appBundleID: bundle, attemptOrder: order, attempts: attempts, totalElapsedMilliseconds: elapsedMilliseconds(since: start), finalOutcome: outcome, finalStrategy: strategy, finalReason: reason))
+    private func finish(_ start: DispatchTime, _ bundle: String, _ order: [Strategy], _ outcome: ReplacementOutcome, _ strategy: Strategy?, _ reason: String) {
+        do {
+            try logger.append(RunLog(timestamp: ISO8601DateFormatter().string(from: Date()), appBundleID: bundle, attemptOrder: order, attempts: attempts, totalElapsedMilliseconds: elapsedMilliseconds(since: start), finalOutcome: outcome, finalStrategy: strategy, finalReason: reason))
+        } catch {
+            FileHandle.standardError.write(Data("structured_log_failed\n".utf8))
+        }
     }
 }

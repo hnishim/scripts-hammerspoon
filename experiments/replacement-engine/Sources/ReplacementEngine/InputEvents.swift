@@ -33,6 +33,7 @@ enum SelectionProbe {
         let after = pasteboard.changeCount
         guard after != before else { return nil }
         let selected = pasteboard.string(forType: .string)
+        guard pasteboard.changeCount == after else { throw EngineError.clipboardUnavailable("changed during selection probe read") }
         _ = snapshot.restoreIfUnchanged(since: after, pasteboard: pasteboard)
         return selected
     }

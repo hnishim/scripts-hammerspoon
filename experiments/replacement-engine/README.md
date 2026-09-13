@@ -6,7 +6,7 @@ The PoC keeps capture, revalidation, mutation strategy, postcondition verificati
 
 ## Safety boundary
 
-The executable refuses mutation unless `--controlled-fixture` is supplied. HIR-249 runtime work is limited to disposable/non-sensitive fixtures. Target drift is checked before the strategy chain and before every strategy attempt. An event that was dispatched but cannot be verified is terminal as `replacement_dispatched_unverified`; the engine does not continue to another strategy and risk duplicate input.
+The executable refuses mutation unless `--controlled-fixture` is supplied. HIR-249 runtime work is limited to disposable/non-sensitive fixtures. For clipboard-based target revalidation, use a selection containing a unique sentinel within the controlled fixture so the same selected text cannot ambiguously identify another location in the same window. Target drift is checked before the strategy chain and before every strategy attempt. Direct AX writes are treated as `no_op` only after bounded polling keeps observing the exact original value. An event that was dispatched but cannot be verified is terminal as `replacement_dispatched_unverified`; the engine does not continue to another strategy and risk duplicate input.
 
 The normal strategy order is:
 
@@ -67,4 +67,4 @@ Default path:
 ~/Library/Logs/hir-249-replacement-engine.jsonl
 ```
 
-Each line records timestamp, bundle ID, attempted strategies, verification class, reason code, latency, and final outcome. It must not contain selected text, replacement text, prompt/response content, clipboard content, or AXValue content. The HIR-249 Plan requires cleanup after handoff or within 14 days; this PoC does not install a background retention mechanism.
+Each line records timestamp, bundle ID, attempted strategies, verification class, reason code, latency, and final outcome. It must not contain selected text, replacement text, prompt/response content, clipboard content, or AXValue content. A structured-log write failure is emitted as a content-free stderr warning without changing an already-known replacement outcome. The HIR-249 Plan requires cleanup after handoff or within 14 days; this PoC does not install a background retention mechanism.
