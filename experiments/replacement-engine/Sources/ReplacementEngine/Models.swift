@@ -33,6 +33,7 @@ struct Options {
     var delayMilliseconds = 500
     var verificationTimeoutMilliseconds = 350
     var pollIntervalMilliseconds = 20
+    var pasteHoldMilliseconds = 150
     var chunkSize = 16
     var chunkDelayMilliseconds = 8
     var mode: RunMode = .normal
@@ -54,6 +55,7 @@ struct Options {
             case "--delay-ms": options.delayMilliseconds = try positiveInt(try requireValue(), name: argument, allowZero: true)
             case "--verify-timeout-ms": options.verificationTimeoutMilliseconds = try positiveInt(try requireValue(), name: argument, allowZero: false)
             case "--poll-ms": options.pollIntervalMilliseconds = try positiveInt(try requireValue(), name: argument, allowZero: false)
+            case "--paste-hold-ms": options.pasteHoldMilliseconds = try positiveInt(try requireValue(), name: argument, allowZero: true)
             case "--chunk-size": options.chunkSize = try positiveInt(try requireValue(), name: argument, allowZero: false)
             case "--chunk-delay-ms": options.chunkDelayMilliseconds = try positiveInt(try requireValue(), name: argument, allowZero: true)
             case "--mode":
@@ -158,6 +160,7 @@ func printUsageAndExit() -> Never {
       --delay-ms N
       --verify-timeout-ms N
       --poll-ms N
+      --paste-hold-ms N
       --mode normal|single|from
       --strategy \(strategies)
       --chunk-size N

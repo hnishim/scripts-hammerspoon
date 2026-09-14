@@ -8,6 +8,10 @@ The PoC keeps capture, revalidation, mutation strategy, postcondition verificati
 
 The executable refuses mutation unless `--controlled-fixture` is supplied. HIR-249 runtime work is limited to disposable/non-sensitive fixtures. For clipboard-based target revalidation, use a selection containing a unique sentinel within the controlled fixture so the same selected text cannot ambiguously identify another location in the same window. Target drift is checked before the strategy chain and before every strategy attempt. Direct AX writes are treated as `no_op` only after bounded polling keeps observing the exact original value. An event that was dispatched but cannot be verified is terminal as `replacement_dispatched_unverified`; the engine does not continue to another strategy and risk duplicate input.
 
+For Slack (`com.tinyspeck.slackmacgap`) and Meru (`sh.zoid.meru`), target capture does not trust the system-wide focused element alone. It searches the focused window for `AXTextArea` candidates, requires an unambiguous selected-text context, and prefers the focused candidate. If a unique structural target cannot be resolved, the engine fails closed rather than performing an exploratory write.
+
+Clipboard paste strategies use a bounded post-dispatch hold before restoring the original clipboard when no AX postcondition is available. This is controlled by `--paste-hold-ms` (default 150 ms) and is intended to avoid racing applications that consume the pasteboard asynchronously. The hold does not convert an unobservable dispatch into success; the outcome remains `replacement_dispatched_unverified` unless an exact postcondition is observed.
+
 The normal strategy order is:
 
 1. verified `AXSelectedText`
@@ -35,6 +39,16 @@ printf %s 'replacement fixture' | swift run replacement-engine \
   --controlled-fixture \
   --mode single \
   --strategy paste_match_style
+```
+
+For the clipboard lifecycle discriminating experiment, vary the bounded hold explicitly:
+
+```sh
+printf %s 'replacement fixture' | swift run replacement-engine \
+  --controlled-fixture \
+  --mode single \
+  --strategy clipboard_cmd_v \
+  --paste-hold-ms 150
 ```
 
 Start the diagnostic chain at a later strategy:

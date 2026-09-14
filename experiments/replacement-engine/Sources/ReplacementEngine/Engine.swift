@@ -91,6 +91,11 @@ final class ReplacementEngine {
         try transaction.writeReplacement(replacement)
         let flags: CGEventFlags = matchStyle ? [.maskCommand, .maskAlternate, .maskShift] : .maskCommand
         try KeyEvents.chord(keyCode: CGKeyCode(kVK_ANSI_V), flags: flags)
+
+        if ExpectedState.from(capture, replacement: replacement) == nil && options.pasteHoldMilliseconds > 0 {
+            Thread.sleep(forTimeInterval: Double(options.pasteHoldMilliseconds) / 1000.0)
+        }
+
         return verifyEvent(capture, matchStyle ? "exact_postcondition_after_match_style" : "exact_postcondition_after_paste", matchStyle ? "match_style_dispatched_postcondition_unverified" : "paste_dispatched_postcondition_unverified")
     }
 
