@@ -82,9 +82,9 @@ return {
   -- o
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "p", action = { type = "app", app = "Microsoft PowerPoint" } },
   -- q
-  -- r
+  { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "r", action = { type = "app", app = "Reminders" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "s", action = { type = "app", app = "Slack" } },
-  -- t
+  { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "t", action = { type = "app", app = "Warp" } },
   -- u
   -- v
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "w", action = { type = "app", app = "1Password" } },
