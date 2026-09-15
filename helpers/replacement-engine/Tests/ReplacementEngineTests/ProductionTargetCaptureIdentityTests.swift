@@ -91,4 +91,23 @@ final class ProductionTargetCaptureIdentityTests: XCTestCase {
             "selected text is optional evidence; matching structural identity must remain replacement-eligible"
         )
     }
+
+    func testRevalidationDoesNotRequireSelectedTextWhenUnavailableAtBothPoints() {
+        let decision = ProductionTargetPolicy.revalidationDecision(
+            appMatches: true,
+            pidMatches: true,
+            windowMatches: true,
+            targetMatches: true,
+            capturedRange: CFRange(location: 2, length: 4),
+            currentRange: CFRange(location: 2, length: 4),
+            capturedSelectedText: nil,
+            currentSelectedText: nil
+        )
+
+        XCTAssertEqual(
+            decision,
+            .replacementEligible,
+            "selected text availability itself must remain optional when structural identity matches"
+        )
+    }
 }
