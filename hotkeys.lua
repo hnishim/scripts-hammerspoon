@@ -1,6 +1,7 @@
 local aiCommands = require("actions.ai_commands")
 local appLauncher = require("actions.app_launcher")
 local windowManagement = require("actions.window_management")
+local twoPanesFinder = require("actions.two_panes_finder")
 local utilityCommand = require("actions.utility_command")
 local urlCommands = require("actions.url_commands")
 local fileNameCopy = require("actions.file_name_copy")
@@ -115,6 +116,7 @@ local function validateAction(action, bindingIndex)
     end
     return true
   end
+  if action.type == "two_panes_finder" then return true end
   if action.type == "file_name_copy" then return true end
   return false, prefix .. ".type is unknown"
 end
@@ -160,6 +162,7 @@ local function dispatch(action)
   if action.type == "app" then return appLauncher.run(action.app) end
   if action.type == "window" then return windowManagement.run(action.command) end
   if action.type == "url" then return urlCommands.run(action.command) end
+  if action.type == "two_panes_finder" then return twoPanesFinder.run() end
   return utilityCommand.run(action.executablePath, action.scriptPath)
 end
 
@@ -235,6 +238,7 @@ function M.start()
 
   stopAction(aiCommands)
   stopAction(windowManagement)
+  stopAction(twoPanesFinder)
   stopAction(utilityCommand)
   if fileNameCopyEventTap or #handles > 0 then stopAction(fileNameCopy) end
   if fileNameCopyEventTap then

@@ -139,6 +139,7 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 package.preload["actions.ai_commands"] = function() return actionStub("ai") end
 package.preload["actions.app_launcher"] = function() return actionStub("app") end
 package.preload["actions.window_management"] = function() return actionStub("window") end
+package.preload["actions.two_panes_finder"] = function() return actionStub("two_panes_finder") end
 package.preload["actions.utility_command"] = function() return actionStub("utility") end
 package.preload["actions.url_commands"] = function() return actionStub("url") end
 package.preload["actions.file_name_copy"] = function() return actionStub("file_name_copy") end
@@ -196,7 +197,7 @@ expected[#expected + 1] = {
 }
 expected[#expected + 1] = {
   modifiers = { "cmd", "alt", "shift" }, key = "f",
-  action = { type = "utility", executablePath = "/usr/bin/osascript", scriptPath = raycastRoot .. "two-panes-finder.applescript" },
+  action = { type = "two_panes_finder" },
 }
 expected[#expected + 1] = {
   modifiers = { "cmd", "alt", "shift" }, key = "c",
@@ -226,6 +227,7 @@ local function actionArguments(action)
   if action.type == "ai" then return { action.promptPath, action.model, action.mode, action.model_failover } end
   if action.type == "app" then return { action.app } end
   if action.type == "window" or action.type == "url" then return { action.command } end
+  if action.type == "two_panes_finder" then return {} end
   if action.type == "utility" then return { action.executablePath, action.scriptPath } end
   error("unsupported test action type: " .. tostring(action.type))
 end
@@ -426,7 +428,7 @@ local appIndex = configIndexFor(expected[4])
 local windowIndex = configIndexFor(expected[18])
 local urlIndex = configIndexFor(expected[24])
 local previousIndex = configIndexFor(expected[26])
-local utilityIndex = configIndexFor(expected[27])
+local utilityIndex = configIndexFor(expected[28])
 local fileNameCopyIndex = configIndexFor(expectedFileNameCopy)
 
 local changedAI = copyBinding(config[aiIndex])
@@ -462,7 +464,7 @@ changedExpected[1] = changedAI
 changedExpected[4] = changedApp
 changedExpected[18] = changedWindow
 changedExpected[24] = changedURL
-changedExpected[27] = changedUtility
+changedExpected[28] = changedUtility
 assertRegisteredBindings(changedExpected, expectedCount * 2 + 1)
 clearActionCalls()
 handles[signature(changedAI.modifiers, changedAI.key)].callback()
@@ -505,10 +507,6 @@ local function assertInjectedConfigurationRejected(name, injectedValue)
   local savedConfigLoaded = package.loaded["hotkeys_config"]
   local savedConfigPreload = package.preload["hotkeys_config"]
   local beforeAlerts = #alertCalls
-  -- Load an isolated hotkeys module so this test does not assume that every
-  -- implementation re-requires hotkeys_config inside start(). The normal
-  -- module and its active handles remain untouched while the loader input is
-  -- invalid.
   package.loaded["hotkeys"] = nil
   package.loaded["hotkeys_config"] = nil
   package.preload["hotkeys_config"] = function() return injectedValue end
@@ -516,11 +514,7 @@ local function assertInjectedConfigurationRejected(name, injectedValue)
   local hasStart = loadOK and type(isolatedHotkeys) == "table" and type(isolatedHotkeys.start) == "function"
   local hasErrorAccessor = loadOK and type(isolatedHotkeys) == "table" and type(isolatedHotkeys.getLastError) == "function"
   local startOK, result
-  if hasStart then
-    startOK, result = pcall(isolatedHotkeys.start)
-  else
-    startOK, result = false, nil
-  end
+  if hasStart then startOK, result = pcall(isolatedHotkeys.start) else startOK, result = false, nil end
   package.loaded["hotkeys"] = savedHotkeysLoaded
   package.preload["hotkeys"] = savedHotkeysPreload
   package.loaded["hotkeys_config"] = savedConfigLoaded
@@ -626,9 +620,6 @@ for _, testCase in ipairs(invalidCases) do
 end
 for index, binding in ipairs(originalBindings) do config[index] = binding end
 
--- One representative malformed file_name_copy binding is enough to cover the
--- eventtap action's validation boundary; detailed field permutations belong to
--- the generic binding validator's tests above.
 for index, binding in ipairs(originalBindings) do config[index] = binding end
 assertInvalidConfiguration("file_name_copy missing action", function()
   local binding = copyBinding(config[fileNameCopyIndex])
@@ -703,8 +694,6 @@ assertEqual(recoveredAfterStartFailureResult, true, "start succeeds after eventt
 assertEqual(#bindCalls, expectedCount * 8, "recovery after eventtap start failure binds 28 regular hotkeys")
 assertEqual(#eventTapCalls, 7, "recovery after eventtap start failure registers one event tap")
 
--- A valid configuration may bind partially, but every newly returned handle is
--- cleaned up and no partial handle remains active after a bind failure.
 local beforeFailureCount = #bindCalls
 local beforeFailureAttempts = bindAttempts
 local previousActive = activeSnapshot()
@@ -739,8 +728,6 @@ for index = recoveryFirstIndex, #bindCalls do
 end
 assertEqual(countEntries(handles), expectedCount, "recovery restores the complete active registry")
 
--- Loading main with action modules that fail makes an accidental multi-entrypoint
--- startup observable without inspecting source text.
 package.loaded["hotkeys"] = nil
 local mainStartCalls = 0
 package.preload["hotkeys"] = function()
@@ -753,7 +740,7 @@ package.preload["input_source_guard"] = function()
 end
 for _, name in ipairs({
   "actions.ai_commands", "actions.app_launcher",
-  "actions.window_management", "actions.utility_command", "actions.url_commands", "components.hud",
+  "actions.window_management", "actions.two_panes_finder", "actions.utility_command", "actions.url_commands", "components.hud",
 }) do
   package.loaded[name] = nil
   package.preload[name] = function() error("main must not load action module " .. name) end
