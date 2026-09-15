@@ -2,7 +2,9 @@ local M = {}
 
 local RETRY_DELAY_SECONDS = 0.05
 local MAX_RETRY_COUNT = 20
+local MAX_READBACK_COUNT = 3
 local retryTimer
+local readbackTimer
 
 local function showError()
   if type(hs) == "table" and type(hs.alert) == "table" and type(hs.alert.show) == "function" then
@@ -27,6 +29,14 @@ local function validFrame(frame)
     and isFiniteNumber(frame.h)
     and frame.w > 0
     and frame.h > 0
+end
+
+local function frameMatches(actual, target)
+  if not validFrame(actual) or not validFrame(target) then return false end
+  for _, field in ipairs({ "x", "y", "w", "h" }) do
+    if math.abs(actual[field] - target[field]) > 2 then return false end
+  end
+  return true
 end
 
 local function frameForScreen(screen)
@@ -120,6 +130,46 @@ local function activateFinder()
   return false
 end
 
+local function stopTimer(timer)
+  if not timer then return end
+  if type(timer.stop) == "function" then
+    pcall(timer.stop, timer)
+  elseif type(hs) == "table" and type(hs.timer) == "table" and type(hs.timer.stop) == "function" then
+    pcall(hs.timer.stop, timer)
+  end
+end
+
+local function stopReadbackTimer()
+  local timer = readbackTimer
+  readbackTimer = nil
+  stopTimer(timer)
+end
+
+local function schedulePlacementReadback(left, right, leftTarget, rightTarget, attempt)
+  if type(left.frame) ~= "function" or type(right.frame) ~= "function" then return true end
+  if type(hs) ~= "table" or type(hs.timer) ~= "table" or type(hs.timer.doAfter) ~= "function" then
+    return false
+  end
+
+  local delay = attempt == 1 and 0.05 or 0.1
+  local timerOK, timer = pcall(hs.timer.doAfter, delay, function()
+    readbackTimer = nil
+    local leftOK, leftFrame = pcall(left.frame, left)
+    local rightOK, rightFrame = pcall(right.frame, right)
+    if leftOK and rightOK and frameMatches(leftFrame, leftTarget) and frameMatches(rightFrame, rightTarget) then
+      return
+    end
+    if attempt >= MAX_READBACK_COUNT then
+      showError()
+      return
+    end
+    if not schedulePlacementReadback(left, right, leftTarget, rightTarget, attempt + 1) then showError() end
+  end)
+  if not timerOK or not timer then return false end
+  readbackTimer = timer
+  return true
+end
+
 local function placeWindows(windows, screenFrame)
   if #windows < 2 then return false end
   local leftFrame, rightFrame = paneFrames(screenFrame)
@@ -132,6 +182,7 @@ local function placeWindows(windows, screenFrame)
   if not leftOK or leftResult == false then return false end
   local rightOK, rightResult = pcall(right.setFrame, right, rightFrame, 0)
   if not rightOK or rightResult == false then return false end
+  if not schedulePlacementReadback(left, right, leftFrame, rightFrame, 1) then return false end
   return activateFinder()
 end
 
@@ -167,12 +218,7 @@ end
 local function stopRetryTimer()
   local timer = retryTimer
   retryTimer = nil
-  if not timer then return end
-  if type(timer.stop) == "function" then
-    pcall(timer.stop, timer)
-  elseif type(hs) == "table" and type(hs.timer) == "table" and type(hs.timer.stop) == "function" then
-    pcall(hs.timer.stop, timer)
-  end
+  stopTimer(timer)
 end
 
 local function scheduleRetry(screenFrame, retriesRemaining)
@@ -208,6 +254,7 @@ end
 
 function M.stop()
   stopRetryTimer()
+  stopReadbackTimer()
 end
 
 function M.run()
