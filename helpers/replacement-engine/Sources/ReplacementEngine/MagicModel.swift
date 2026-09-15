@@ -54,7 +54,12 @@ enum EditabilityPolicy {
 enum UTF16RangeCodec {
     static func stringRange(_ range: CFRange, in value: String) -> Range<String.Index>? {
         guard range.location >= 0, range.length >= 0 else { return nil }
-        return Range(NSRange(location: range.location, length: range.length), in: value)
+        let requested = NSRange(location: range.location, length: range.length)
+        guard let stringRange = Range(requested, in: value) else { return nil }
+        let roundTrip = NSRange(stringRange, in: value)
+        guard roundTrip.location == requested.location,
+              roundTrip.length == requested.length else { return nil }
+        return stringRange
     }
 
     static func substring(_ range: CFRange, in value: String) -> String? {
