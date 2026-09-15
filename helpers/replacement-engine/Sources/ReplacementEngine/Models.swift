@@ -146,9 +146,12 @@ struct ProductionTargetCapture {
     let pid: pid_t
     let focusedWindow: AXUIElement?
     let target: AXUIElement?
+    let targetSnapshot: MagicFieldSnapshot?
     let selectedRange: CFRange?
     let selectedText: String?
     let selection: String
+    let selectionSource: SelectionSourceKind
+    let selectionEditabilityEvidence: EditabilityEvidenceKind
     let replacementEligible: Bool
     let reason: String
 }
