@@ -50,10 +50,19 @@ enum TargetResolver {
     static func resolve(
         bundleID: String,
         appElement: AXUIElement,
+        appFocused: AXUIElement?,
         focusedWindow: AXUIElement?,
         systemFocused: AXUIElement?
     ) -> AXUIElement? {
         guard selectorBundles.contains(bundleID) else { return systemFocused }
+
+        if let appFocused, isTextAreaCandidate(appFocused), hasSelectionContext(appFocused) {
+            return appFocused
+        }
+
+        if let systemFocused, isTextAreaCandidate(systemFocused), hasSelectionContext(systemFocused) {
+            return systemFocused
+        }
 
         let root = focusedWindow ?? appElement
         var candidates: [AXUIElement] = []
@@ -76,11 +85,15 @@ enum TargetResolver {
         let withSelection = candidates.filter(hasSelectionContext)
         if withSelection.count == 1 { return withSelection[0] }
 
-        if let systemFocused, isTextAreaCandidate(systemFocused), hasSelectionContext(systemFocused) {
-            return systemFocused
-        }
-
         return nil
+    }
+
+    static func unresolvedReason(bundleID: String, appFocused: AXUIElement?) -> String {
+        guard selectorBundles.contains(bundleID) else { return "resolved_target_unavailable" }
+        guard let appFocused else { return "app_focused_target_unavailable" }
+        guard isTextAreaCandidate(appFocused) else { return "app_focused_target_role_mismatch" }
+        guard hasSelectionContext(appFocused) else { return "app_focused_selection_unavailable" }
+        return "resolved_target_unavailable"
     }
 
     private static func isTextAreaCandidate(_ element: AXUIElement) -> Bool {
@@ -108,6 +121,7 @@ enum ProductionTargetCaptureEngine {
 
         let pid = app.processIdentifier
         let appElement = AXUIElementCreateApplication(pid)
+        let appFocused = AX.elementAttribute(appElement, kAXFocusedUIElementAttribute as CFString)
         let focusedWindow = AX.elementAttribute(appElement, kAXFocusedWindowAttribute as CFString)
         let systemFocused = AX.elementAttribute(
             AXUIElementCreateSystemWide(),
@@ -116,6 +130,7 @@ enum ProductionTargetCaptureEngine {
         let target = TargetResolver.resolve(
             bundleID: bundleID,
             appElement: appElement,
+            appFocused: appFocused,
             focusedWindow: focusedWindow,
             systemFocused: systemFocused
         )
@@ -133,7 +148,9 @@ enum ProductionTargetCaptureEngine {
         )
         let eligible = decision == .replacementEligible
         let reason = captureReason(
+            bundleID: bundleID,
             pid: pid,
+            appFocused: appFocused,
             focusedWindow: focusedWindow,
             target: target,
             selectedRange: selectedRange,
@@ -171,6 +188,7 @@ enum ProductionTargetCaptureEngine {
 
         let currentPID = app.processIdentifier
         let appElement = AXUIElementCreateApplication(currentPID)
+        let appFocused = AX.elementAttribute(appElement, kAXFocusedUIElementAttribute as CFString)
         let focusedWindow = AX.elementAttribute(appElement, kAXFocusedWindowAttribute as CFString)
         let systemFocused = AX.elementAttribute(
             AXUIElementCreateSystemWide(),
@@ -179,6 +197,7 @@ enum ProductionTargetCaptureEngine {
         let target = TargetResolver.resolve(
             bundleID: bundleID,
             appElement: appElement,
+            appFocused: appFocused,
             focusedWindow: focusedWindow,
             systemFocused: systemFocused
         )
@@ -214,7 +233,9 @@ enum ProductionTargetCaptureEngine {
     }
 
     private static func captureReason(
+        bundleID: String,
         pid: pid_t,
+        appFocused: AXUIElement?,
         focusedWindow: AXUIElement?,
         target: AXUIElement?,
         selectedRange: CFRange?,
@@ -223,7 +244,7 @@ enum ProductionTargetCaptureEngine {
         if eligible { return "strong_identity" }
         if pid <= 0 { return "process_identity_unavailable" }
         if focusedWindow == nil { return "focused_window_unavailable" }
-        if target == nil { return "resolved_target_unavailable" }
+        if target == nil { return TargetResolver.unresolvedReason(bundleID: bundleID, appFocused: appFocused) }
         guard let selectedRange, selectedRange.location >= 0, selectedRange.length > 0 else {
             return "selected_range_unavailable"
         }
