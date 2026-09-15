@@ -5,6 +5,8 @@ local encodedPayloads = {}
 local alerts = {}
 local resultPanelShows = {}
 local hudEvents = {}
+local helperTaskCreationFailure = false
+local helperTaskStartFailure = false
 
 local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
@@ -23,6 +25,10 @@ local function containsValue(value, expected)
   return false
 end
 
+local function isReplacementHelperPath(path)
+  return type(path) == "string" and path:match("replacement%-engine$") ~= nil
+end
+
 local function timerAfter(delay, callback)
   local timer = { delay = delay, callback = callback, stopped = false }
   function timer:stop() self.stopped = true end
@@ -30,7 +36,29 @@ local function timerAfter(delay, callback)
   return timer
 end
 
+local function liveTimers()
+  local count = 0
+  for _, timer in ipairs(timers) do
+    if not timer.stopped then count = count + 1 end
+  end
+  return count
+end
+
+local function fireLatestTimer()
+  for index = #timers, 1, -1 do
+    local timer = timers[index]
+    if not timer.stopped then
+      timer.stopped = true
+      timer.callback()
+      return timer
+    end
+  end
+  error("missing live timer")
+end
+
 local function newTask(path, callback, streamOrArguments, maybeArguments)
+  if helperTaskCreationFailure and isReplacementHelperPath(path) then return nil end
+
   local streamCallback, arguments
   if type(streamOrArguments) == "function" then
     streamCallback = streamOrArguments
@@ -49,7 +77,11 @@ local function newTask(path, callback, streamOrArguments, maybeArguments)
     terminated = false,
     inputClosed = false,
   }
-  function task:start() self.started = true; return self end
+  function task:start()
+    if helperTaskStartFailure and isReplacementHelperPath(self.path) then return false end
+    self.started = true
+    return self
+  end
   function task:terminate() self.terminated = true; return self end
   function task:setInput(value) self.inputs[#self.inputs + 1] = value; return self end
   function task:closeInput() self.inputClosed = true; return self end
@@ -88,15 +120,20 @@ _G.hs = {
       return "ENCODED:" .. tostring(#encodedPayloads)
     end,
     decode = function(value)
+      if value:find("MALFORMED", 1, true) then error("injected malformed helper protocol") end
       if value:find('"event"%s*:%s*"capture"') then
+        local eligible = value:find('"replacement_eligible"%s*:%s*false') == nil
         return {
           event = "capture",
           type = "capture",
           selection = "入力",
           selected_text = "入力",
-          replacement_eligible = true,
-          reason = "strong_identity",
+          replacement_eligible = eligible,
+          reason = eligible and "strong_identity" or "weak_identity",
         }
+      end
+      if value:find('"event"%s*:%s*"unknown"') then
+        return { event = "unknown", type = "unknown", reason = "fixture_unknown_event" }
       end
       if value:find("replacement_dispatched_unverified", 1, true) then
         return {
@@ -203,19 +240,23 @@ local function latestRequest()
   return request
 end
 
-local function startEligibleReplace()
+local function startReplaceWithoutCapture()
   local beforeTasks = #tasks
   local beforeRequests = #httpRequests
   ai.run(promptPath, model, "replace")
   local helper = taskAt(beforeTasks + 1, "replace mode must start the replacement helper before Gemini")
   assertTrue(helper.started, "replacement helper is started")
   assertTrue(type(helper.streamCallback) == "function", "replacement helper uses a streaming callback")
-  assertTrue(helper.path ~= "/usr/bin/id" and helper.path:match("replacement%-engine$") ~= nil,
-    "replace mode starts replacement-engine before account/keychain lookup")
+  assertTrue(isReplacementHelperPath(helper.path), "replace mode starts replacement-engine before account/keychain lookup")
   for _, argument in ipairs(helper.arguments or {}) do
     assert(argument ~= "入力" and argument ~= "結果", "selection/replacement content is not passed as process arguments")
   end
+  assertEqual(#httpRequests, beforeRequests, "Gemini does not start before helper capture")
+  return helper, beforeTasks, beforeRequests
+end
 
+local function startEligibleReplace()
+  local helper, beforeTasks, beforeRequests = startReplaceWithoutCapture()
   emitCapture(helper, true)
   completeCredentials(beforeTasks + 2)
   assertEqual(#httpRequests, beforeRequests + 1, "capture starts exactly one Gemini request")
@@ -258,6 +299,20 @@ do
   assertEqual(#alerts, beforeAlerts, "replacement_dispatched_unverified is not treated as an error")
 end
 
+-- F1: weak identity can still supply Gemini input, but must never receive a replacement command.
+do
+  local beforePanels = #resultPanelShows
+  local helper, beforeTasks, beforeRequests = startReplaceWithoutCapture()
+  emitCapture(helper, false)
+  completeCredentials(beforeTasks + 2)
+  assertEqual(#httpRequests, beforeRequests + 1, "weak identity capture still starts Gemini for display-only output")
+  local request = latestRequest()
+  request.callback(200, "GEMINI", "")
+  assertEqual(#helper.inputs, 0, "weak identity never receives a replacement payload")
+  assertEqual(#resultPanelShows, beforePanels + 1, "weak identity displays the Gemini result exactly once")
+  assertEqual(resultPanelShows[#resultPanelShows], "結果", "weak identity display-only result content")
+end
+
 -- Safe fallback: a certain no-mutation outcome may display the already-computed result once.
 do
   local beforePanels = #resultPanelShows
@@ -281,7 +336,103 @@ do
   assertEqual(#alerts, beforeAlerts + 1, "helper error shows one generic safe error")
 end
 
--- Cancellation: a stale Gemini callback after stop cannot write to the old helper.
+-- F2: missing helper binary/task creation fails closed before Gemini.
+do
+  local beforeTasks = #tasks
+  local beforeRequests = #httpRequests
+  local beforePanels = #resultPanelShows
+  local beforeAlerts = #alerts
+  helperTaskCreationFailure = true
+  ai.run(promptPath, model, "replace")
+  helperTaskCreationFailure = false
+  assertEqual(#tasks, beforeTasks, "helper task creation failure does not start credential tasks")
+  assertEqual(#httpRequests, beforeRequests, "helper task creation failure does not start Gemini")
+  assertEqual(#resultPanelShows, beforePanels, "helper task creation failure does not show a duplicate result panel")
+  assertEqual(#alerts, beforeAlerts + 1, "helper task creation failure shows one generic safe error")
+end
+
+-- F2: helper start failure fails closed before Gemini and leaves no running helper.
+do
+  local beforeTasks = #tasks
+  local beforeRequests = #httpRequests
+  local beforePanels = #resultPanelShows
+  local beforeAlerts = #alerts
+  helperTaskStartFailure = true
+  ai.run(promptPath, model, "replace")
+  helperTaskStartFailure = false
+  local helper = taskAt(beforeTasks + 1, "failed-start helper task is missing")
+  assertTrue(isReplacementHelperPath(helper.path), "failed-start task is the replacement helper")
+  assertEqual(helper.started, false, "failed-start helper never becomes running")
+  assertEqual(#httpRequests, beforeRequests, "helper start failure does not start Gemini")
+  assertEqual(#resultPanelShows, beforePanels, "helper start failure does not show a duplicate result panel")
+  assertEqual(#alerts, beforeAlerts + 1, "helper start failure shows one generic safe error")
+end
+
+-- F2: nonzero helper exit before capture cannot start Gemini or mutate.
+do
+  local beforePanels = #resultPanelShows
+  local beforeAlerts = #alerts
+  local helper, _, beforeRequests = startReplaceWithoutCapture()
+  completeTask(helper, 1, "", "permission denied")
+  assertEqual(#httpRequests, beforeRequests, "pre-capture helper exit does not start Gemini")
+  assertEqual(#helper.inputs, 0, "pre-capture helper exit cannot receive replacement input")
+  assertEqual(#resultPanelShows, beforePanels, "pre-capture helper exit does not show a duplicate panel")
+  assertEqual(#alerts, beforeAlerts + 1, "pre-capture helper exit shows one generic safe error")
+end
+
+-- F2: malformed helper protocol terminates the session without mutation or duplicate panel.
+do
+  local beforePanels = #resultPanelShows
+  local beforeAlerts = #alerts
+  local helper, _, beforeRequests = startReplaceWithoutCapture()
+  streamTask(helper, "MALFORMED\n", "")
+  assertTrue(helper.terminated, "malformed helper protocol terminates the helper")
+  assertEqual(#httpRequests, beforeRequests, "malformed helper protocol does not start Gemini")
+  assertEqual(#helper.inputs, 0, "malformed helper protocol cannot trigger replacement input")
+  assertEqual(#resultPanelShows, beforePanels, "malformed helper protocol does not show a duplicate panel")
+  assertEqual(#alerts, beforeAlerts + 1, "malformed helper protocol shows one generic safe error")
+end
+
+-- F2: unknown helper event is rejected as protocol failure.
+do
+  local beforePanels = #resultPanelShows
+  local beforeAlerts = #alerts
+  local helper, _, beforeRequests = startReplaceWithoutCapture()
+  streamTask(helper, '{"event":"unknown","reason":"fixture"}\n', "")
+  assertTrue(helper.terminated, "unknown helper event terminates the helper")
+  assertEqual(#httpRequests, beforeRequests, "unknown helper event does not start Gemini")
+  assertEqual(#helper.inputs, 0, "unknown helper event cannot trigger replacement input")
+  assertEqual(#resultPanelShows, beforePanels, "unknown helper event does not show a duplicate panel")
+  assertEqual(#alerts, beforeAlerts + 1, "unknown helper event shows one generic safe error")
+end
+
+-- F2: capture timeout terminates the helper; a later stale capture is ignored.
+do
+  local beforePanels = #resultPanelShows
+  local beforeAlerts = #alerts
+  local helper, _, beforeRequests = startReplaceWithoutCapture()
+  assertTrue(liveTimers() > 0, "replacement capture arms a watchdog")
+  fireLatestTimer()
+  assertTrue(helper.terminated, "capture timeout terminates the helper")
+  assertEqual(#httpRequests, beforeRequests, "capture timeout does not start Gemini")
+  assertEqual(#resultPanelShows, beforePanels, "capture timeout does not show a duplicate result panel")
+  assertEqual(#alerts, beforeAlerts + 1, "capture timeout shows one generic safe error")
+  emitCapture(helper, true)
+  assertEqual(#httpRequests, beforeRequests, "stale capture after timeout cannot start Gemini")
+  assertEqual(#helper.inputs, 0, "stale capture after timeout cannot trigger mutation")
+end
+
+-- F2: explicit cancellation before capture terminates the helper and ignores later events.
+do
+  local helper, _, beforeRequests = startReplaceWithoutCapture()
+  ai.stop()
+  assertTrue(helper.terminated, "capture-stage cancellation terminates the helper")
+  emitCapture(helper, true)
+  assertEqual(#httpRequests, beforeRequests, "stale capture after cancellation cannot start Gemini")
+  assertEqual(#helper.inputs, 0, "stale capture after cancellation cannot trigger mutation")
+end
+
+-- Cancellation after Gemini: a stale Gemini callback after stop cannot write to the old helper.
 do
   local helper, request = startEligibleReplace()
   ai.stop()
@@ -298,7 +449,7 @@ do
   local beforeTasks = #tasks
   ai.run(promptPath, model, "replace")
   local helper = taskAt(beforeTasks + 1, "replacement helper is missing")
-  assertTrue(helper.path:match("replacement%-engine$") ~= nil, "replacement helper path")
+  assertTrue(isReplacementHelperPath(helper.path), "replacement helper path")
   ai.run(promptPath, model, "display")
   assertTrue(helper.terminated, "new operation terminates the previous replacement helper")
 end

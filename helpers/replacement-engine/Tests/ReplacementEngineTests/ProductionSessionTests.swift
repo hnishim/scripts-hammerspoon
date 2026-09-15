@@ -122,6 +122,18 @@ final class SessionProtocolTests: XCTestCase {
         XCTAssertEqual(decoded, event)
     }
 
+    func testCaptureEventRoundTripsWeakIdentityWithoutPromotingEligibility() throws {
+        let event = SessionCaptureEvent(
+            selection: "fixture selection",
+            replacementEligible: false,
+            reason: "selected_range_unavailable"
+        )
+        let data = try JSONEncoder().encode(event)
+        let decoded = try JSONDecoder().decode(SessionCaptureEvent.self, from: data)
+        XCTAssertEqual(decoded, event)
+        XCTAssertFalse(decoded.replacementEligible)
+    }
+
     func testReplacementCommandRoundTripsWithoutProcessArguments() throws {
         let command = SessionReplacementCommand(replacement: "fixture replacement")
         let data = try JSONEncoder().encode(command)
@@ -141,6 +153,102 @@ final class SessionProtocolTests: XCTestCase {
             let decoded = try JSONDecoder().decode(SessionOutcomeEvent.self, from: data)
             XCTAssertEqual(decoded, event)
         }
+    }
+}
+
+final class SelectionProbeTests: XCTestCase {
+    private enum FixtureError: Error { case copyFailed }
+    private let htmlType = NSPasteboard.PasteboardType("public.html")
+
+    private func makePasteboard() -> NSPasteboard {
+        NSPasteboard(name: NSPasteboard.Name("hir235-probe-tests-\(UUID().uuidString)"))
+    }
+
+    private func seedRichMultiItemClipboard(_ pasteboard: NSPasteboard) -> (String, Data, String) {
+        let text = "prior text"
+        let rtf = Data("{\\rtf1 prior text}".utf8)
+        let html = "<p>secondary item</p>"
+
+        let first = NSPasteboardItem()
+        first.setString(text, forType: .string)
+        first.setData(rtf, forType: .rtf)
+        let second = NSPasteboardItem()
+        second.setString(html, forType: htmlType)
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects([first, second]))
+        return (text, rtf, html)
+    }
+
+    private func writeOwnershipChange(_ text: String, to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString(text, forType: .string))
+    }
+
+    private func assertRichMultiItemClipboard(
+        _ pasteboard: NSPasteboard,
+        text: String,
+        rtf: Data,
+        html: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let items = pasteboard.pasteboardItems ?? []
+        XCTAssertEqual(items.count, 2, file: file, line: line)
+        guard items.count == 2 else { return }
+        XCTAssertEqual(items[0].string(forType: .string), text, file: file, line: line)
+        XCTAssertEqual(items[0].data(forType: .rtf), rtf, file: file, line: line)
+        XCTAssertEqual(items[1].string(forType: htmlType), html, file: file, line: line)
+    }
+
+    func testCaptureProbeRestoresRichMultiItemClipboardAfterSuccessfulCopy() throws {
+        let pasteboard = makePasteboard()
+        let (text, rtf, html) = seedRichMultiItemClipboard(pasteboard)
+
+        let selected = try SelectionProbe.captureByCopy(pasteboard: pasteboard, timeout: 0) {
+            self.writeOwnershipChange("copied selection", to: pasteboard)
+        }
+
+        XCTAssertEqual(selected, "copied selection")
+        assertRichMultiItemClipboard(pasteboard, text: text, rtf: rtf, html: html)
+    }
+
+    func testCaptureProbeNoChangeReturnsNilAndLeavesClipboardUntouched() throws {
+        let pasteboard = makePasteboard()
+        let (text, rtf, html) = seedRichMultiItemClipboard(pasteboard)
+
+        let selected = try SelectionProbe.captureByCopy(pasteboard: pasteboard, timeout: 0) {}
+
+        XCTAssertNil(selected)
+        assertRichMultiItemClipboard(pasteboard, text: text, rtf: rtf, html: html)
+    }
+
+    func testCaptureProbeCopyFailureLeavesClipboardUntouched() {
+        let pasteboard = makePasteboard()
+        let (text, rtf, html) = seedRichMultiItemClipboard(pasteboard)
+
+        XCTAssertThrowsError(
+            try SelectionProbe.captureByCopy(pasteboard: pasteboard, timeout: 0) {
+                throw FixtureError.copyFailed
+            }
+        )
+
+        assertRichMultiItemClipboard(pasteboard, text: text, rtf: rtf, html: html)
+    }
+
+    func testCaptureProbeExternalClipboardChangeIsUnsafeAndNeverRestoresOverIt() {
+        let pasteboard = makePasteboard()
+        _ = seedRichMultiItemClipboard(pasteboard)
+
+        XCTAssertThrowsError(
+            try SelectionProbe.captureByCopy(pasteboard: pasteboard, timeout: 0) {
+                self.writeOwnershipChange("copied selection", to: pasteboard)
+                self.writeOwnershipChange("external change", to: pasteboard)
+            }
+        )
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "external change")
+        XCTAssertEqual(pasteboard.pasteboardItems?.count, 1)
     }
 }
 
