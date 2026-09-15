@@ -510,10 +510,6 @@ handleReplacementResponse = function(state, response)
 
   local inputOK, inputResult = pcall(helper.setInput, helper, encoded .. "\n")
   if not inputOK or inputResult == false then release(state, true); return end
-  if type(helper.closeInput) == "function" then
-    local closeOK = pcall(helper.closeInput, helper)
-    if not closeOK then release(state, true) end
-  end
 end
 
 local function startReplacementSession(promptPath, model, modelFailover)
