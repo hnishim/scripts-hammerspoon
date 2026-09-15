@@ -9,6 +9,7 @@ local operationSequence = 0
 local activeTask
 local runCommand
 local runPrompt
+local handleReplacementResponse
 
 local function trim(value)
   return (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -60,11 +61,19 @@ local function isActive(state)
   return state and not state.done and activeTask == state
 end
 
+local function terminateTask(task)
+  if task and task.terminate then pcall(task.terminate, task) end
+end
+
 local function release(state, errorMessage)
   if not state or state.done then return false end
   state.done = true
   stopTimer(state.watchdog)
   state.watchdog = nil
+  terminateTask(state.keyTask)
+  state.keyTask = nil
+  terminateTask(state.helperTask)
+  state.helperTask = nil
   if activeTask == state then activeTask = nil end
   hud.close()
   if errorMessage then showSafeError() end
@@ -73,6 +82,12 @@ end
 
 local function createTask(path, callback, arguments)
   local ok, task = pcall(hs.task.new, path, callback, arguments)
+  if not ok or not task then return nil end
+  return task
+end
+
+local function createStreamingTask(path, callback, streamCallback, arguments)
+  local ok, task = pcall(hs.task.new, path, callback, streamCallback, arguments)
   if not ok or not task then return nil end
   return task
 end
@@ -90,8 +105,10 @@ function M.stop()
     state.done = true
     stopTimer(state.watchdog)
     state.watchdog = nil
-    if state.keyTask and state.keyTask.terminate then pcall(state.keyTask.terminate, state.keyTask) end
+    terminateTask(state.keyTask)
     state.keyTask = nil
+    terminateTask(state.helperTask)
+    state.helperTask = nil
   end
   pcall(hud.close)
   pcall(resultPanel.stop)
@@ -108,22 +125,7 @@ local function acquireSelection()
   if not focusedOK then return nil, false end
   local selectedOK, selection = pcall(function() return focused:selectedText() end)
   if not selectedOK or selection == nil then return nil, false end
-  return selection, true, focused
-end
-
-local editableRoles = {
-  AXComboBox = true,
-  AXSearchField = true,
-  AXTextArea = true,
-  AXTextField = true,
-}
-
-local function canReplace(focused)
-  if not focused or type(focused.attributeValue) ~= "function" then return false end
-  local roleOK, role = pcall(function() return focused:attributeValue("AXRole") end)
-  if not roleOK or not editableRoles[role] then return false end
-  local editableOK, editable = pcall(function() return focused:attributeValue("AXEditable") end)
-  return editableOK and editable == true
+  return selection, true
 end
 
 local function frontmost(target)
@@ -152,18 +154,8 @@ local function changeCount()
   return ok and value ~= nil, value
 end
 
-local function setContents(value)
-  local ok, result = pcall(hs.pasteboard.setContents, value)
-  return ok and result ~= false
-end
-
 local function clearContents()
   local ok, result = pcall(hs.pasteboard.clearContents)
-  return ok and result ~= false
-end
-
-local function activate(target)
-  local ok, result = pcall(function() return target:activate() end)
   return ok and result ~= false
 end
 
@@ -203,70 +195,11 @@ local function clipboardIsText(types)
   return false
 end
 
-local function clipboardMatches(expectedContents, expectedCount)
-  local snapshotOK, _, currentCount, types = clipboardSnapshot()
-  if not snapshotOK or currentCount ~= expectedCount then return false end
-  if not clipboardIsText(types) then return false end
-  local contentsOK, contents = clipboardContents()
-  return contentsOK and contents == expectedContents
-end
-
 local function clipboardContentsMatch(expectedContents, expectedCount)
   local snapshotOK, _, currentCount = clipboardSnapshot()
   if not snapshotOK or currentCount ~= expectedCount then return false end
   local contentsOK, contents = clipboardContents()
   return contentsOK and contents == expectedContents
-end
-
-local function finishReplace(target, response, complete, priorSnapshot)
-  local function done(errorMessage)
-    complete(errorMessage)
-  end
-  local function restoreIfUntouched(prior, postCount, reportError)
-    if not clipboardMatches(response, postCount) then done("error"); return end
-    local restored = restoreClipboard(prior)
-    if restored then done(reportError and "error" or nil) else done("error") end
-  end
-  local function scheduleRestore(prior, postCount, reportError)
-    if not hs.timer or not hs.timer.doAfter then done("error"); return end
-    local ok = pcall(hs.timer.doAfter, 0.2, function() restoreIfUntouched(prior, postCount, reportError) end)
-    if not ok then done("error") end
-  end
-  local function scheduleError()
-    if not hs.timer or not hs.timer.doAfter then done("error"); return end
-    local ok = pcall(hs.timer.doAfter, 0.2, function() done("error") end)
-    if not ok then done("error") end
-  end
-
-  if not target then scheduleError(); return end
-
-  if not target or not activate(target) or not frontmost(target) then scheduleError(); return end
-  local prior, beforeCount
-  if priorSnapshot then
-    prior = priorSnapshot.snapshot
-    beforeCount = priorSnapshot.currentCount or priorSnapshot.count
-    if priorSnapshot.currentCount and not clipboardMatches(priorSnapshot.currentContents, beforeCount) then
-      scheduleError(); return
-    end
-    if not priorSnapshot.currentCount then
-      local currentCountOK, currentCount = changeCount()
-      if not currentCountOK or currentCount ~= beforeCount then scheduleError(); return end
-    end
-  else
-    local priorOK
-    priorOK, prior, beforeCount = clipboardSnapshot()
-    if not priorOK then scheduleError(); return end
-  end
-  if not setContents(response) then scheduleError(); return end
-  local responseOK, _, postCount = clipboardSnapshot()
-  if not responseOK or postCount ~= beforeCount + 1 then scheduleError(); return end
-  local responseContentsOK, responseContents = clipboardContents()
-  if not responseContentsOK or responseContents ~= response then scheduleError(); return end
-  if not frontmost(target) then scheduleError(); return end
-  if not clipboardMatches(response, postCount) then scheduleError(); return end
-  local pasteOK, pasteResult = pcall(hs.eventtap.keyStroke, { "cmd" }, "v")
-  if not pasteOK or pasteResult == false then scheduleRestore(prior, postCount, true); return end
-  scheduleRestore(prior, postCount)
 end
 
 local function responseText(payload)
@@ -277,15 +210,12 @@ local function responseText(payload)
   local candidates = payload.candidates
   if type(candidates) ~= "table" or #candidates == 0 then return false end
   local candidate = candidates[1]
-  if type(candidate) ~= "table" then return false end
-  if candidate.finishReason == "SAFETY" then return false end
+  if type(candidate) ~= "table" or candidate.finishReason == "SAFETY" then return false end
   local content = candidate.content
-  if type(content) ~= "table" then return false end
-  local parts = content.parts
-  if type(parts) ~= "table" then return false end
+  if type(content) ~= "table" or type(content.parts) ~= "table" then return false end
   local text = {}
-  for index = 1, #parts do
-    local part = parts[index]
+  for index = 1, #content.parts do
+    local part = content.parts[index]
     if type(part) ~= "table" then return false end
     if part.text ~= nil and type(part.text) ~= "string" then return false end
     if part.text ~= nil then text[#text + 1] = part.text end
@@ -295,7 +225,12 @@ local function responseText(payload)
   return true, trim(result)
 end
 
-local function startGemini(state, command, prompt, apiKey, target)
+local function showResult(response)
+  local showOK, displayed = pcall(resultPanel.show, response)
+  if not showOK or not displayed then showSafeError() end
+end
+
+local function startGemini(state, command, prompt, apiKey)
   if not isActive(state) or not hs.http or not hs.http.asyncPost or not hs.json or not hs.json.encode then
     release(state, true)
     return
@@ -337,13 +272,12 @@ local function startGemini(state, command, prompt, apiKey, target)
       if not decodeOK then failRequest(); return end
       local responseOK, response = responseText(payload)
       if not responseOK or response == "" then failRequest(); return end
-      if target then
-        finishReplace(target, response, function(errorMessage) release(state, errorMessage) end, state.priorSnapshot)
+      if state.replacementSession then
+        handleReplacementResponse(state, response)
         return
       end
       release(state)
-      local showOK, displayed = pcall(resultPanel.show, response)
-      if not showOK or not displayed then showSafeError() end
+      showResult(response)
     end
     local timerOK, timer = scheduleTimer(httpTimeout, function()
       if not isActive(state) or state.requestGeneration ~= generation then return end
@@ -357,16 +291,14 @@ local function startGemini(state, command, prompt, apiKey, target)
   issue(command.model, false)
 end
 
-local function startKeychain(state, command, prompt, target)
+local function startKeychain(state, command, prompt)
   if not isActive(state) then return end
-  local function fail()
-    release(state, true)
-  end
+  local function fail() release(state, true) end
   local function armWatchdog()
     stopTimer(state.watchdog)
     local timerOK, timer = scheduleTimer(keychainTimeout, function()
       if not isActive(state) then return end
-      if state.keyTask and state.keyTask.terminate then pcall(state.keyTask.terminate, state.keyTask) end
+      terminateTask(state.keyTask)
       release(state, true)
     end)
     if not timerOK then fail(); return false end
@@ -381,7 +313,7 @@ local function startKeychain(state, command, prompt, target)
     if exitCode ~= 0 then fail(); return end
     local apiKey = trim(stdout)
     if apiKey == "" then fail(); return end
-    startGemini(state, command, prompt, apiKey, target)
+    startGemini(state, command, prompt, apiKey)
   end
   local function accountCallback(exitCode, stdout, _)
     if not isActive(state) then return end
@@ -406,7 +338,7 @@ local function startKeychain(state, command, prompt, target)
   armWatchdog()
 end
 
-local function runPowerPointFallback(promptPath, model, mode, target, modelFailover)
+local function runPowerPointFallback(promptPath, model, target, modelFailover)
   if not frontmost(target) then showSafeError(); return false end
   local priorOK, prior, beforeCount = clipboardSnapshot()
   if not priorOK then showSafeError(); return false end
@@ -414,33 +346,21 @@ local function runPowerPointFallback(promptPath, model, mode, target, modelFailo
   if not copyOK or copyResult == false then showSafeError(); return false end
   local timerOK = scheduleTimer(0.1, function()
     if not isPowerPoint(target) or not frontmost(target) then showSafeError(); return end
-    local currentOK, current, currentCount, types = clipboardSnapshot()
+    local currentOK, _, currentCount, types = clipboardSnapshot()
     if not currentOK then showSafeError(); return end
-    if currentCount == beforeCount then
-      runPrompt(promptPath, model, modelFailover)
-      return
-    end
+    if currentCount == beforeCount then runPrompt(promptPath, model, modelFailover); return end
     if currentCount ~= beforeCount + 1 or not clipboardIsText(types) then showSafeError(); return end
     local contentsOK, contents = clipboardContents()
     if not contentsOK or type(contents) ~= "string" then showSafeError(); return end
-    if contents == "" then
-      if not restoreClipboard(prior) then showSafeError(); return end
-      runPrompt(promptPath, model, modelFailover)
-      return
-    end
-    if mode ~= "replace" then
-      if not restoreClipboard(prior) then showSafeError(); return end
-    end
-    local priorSnapshot = { snapshot = prior, count = beforeCount,
-      currentCount = currentCount, currentContents = contents }
-    runCommand(promptPath, model, mode, contents, mode == "replace" and target or nil,
-      mode == "replace" and priorSnapshot or nil, modelFailover)
+    if not restoreClipboard(prior) then showSafeError(); return end
+    if contents == "" then runPrompt(promptPath, model, modelFailover); return end
+    runCommand(promptPath, model, contents, modelFailover)
   end)
   if not timerOK then showSafeError(); return false end
   return true
 end
 
-local function runClipboardFallback(promptPath, model, _mode, modelFailover, target)
+local function runClipboardFallback(promptPath, model, modelFailover, target)
   if not frontmost(target) then showSafeError(); return false end
   local priorOK, prior, beforeCount = clipboardSnapshot()
   if not priorOK then showSafeError(); return false end
@@ -449,9 +369,7 @@ local function runClipboardFallback(promptPath, model, _mode, modelFailover, tar
   local timerOK = scheduleTimer(0.1, function()
     if not frontmost(target) then showSafeError(); return end
     local currentOK, _, currentCount, types = clipboardSnapshot()
-    if not currentOK or currentCount ~= beforeCount + 1 then
-      showSafeError(); return
-    end
+    if not currentOK or currentCount ~= beforeCount + 1 then showSafeError(); return end
     local contentsOK, contents = clipboardContents()
     if not contentsOK or type(contents) ~= "string" then showSafeError(); return end
     if not clipboardContentsMatch(contents, currentCount) then showSafeError(); return end
@@ -460,11 +378,8 @@ local function runClipboardFallback(promptPath, model, _mode, modelFailover, tar
       showSafeError(); return
     end
     if not restoreClipboard(prior) then showSafeError(); return end
-    if contents == "" then
-      runPrompt(promptPath, model, modelFailover)
-      return
-    end
-    runCommand(promptPath, model, "display", contents, nil, nil, modelFailover)
+    if contents == "" then runPrompt(promptPath, model, modelFailover); return end
+    runCommand(promptPath, model, contents, modelFailover)
   end)
   if not timerOK then showSafeError(); return false end
   return true
@@ -475,13 +390,13 @@ runPrompt = function(promptPath, model, modelFailover)
   if button ~= "実行" then return end
   input = trim(input)
   if input == "" then showMessage("入力テキストが空です。"); return end
-  runCommand(promptPath, model, "display", input, nil, nil, modelFailover)
+  runCommand(promptPath, model, input, modelFailover)
 end
 
-runCommand = function(promptPath, model, mode, input, target, priorSnapshot, modelFailover)
+runCommand = function(promptPath, model, input, modelFailover)
   if activeTask then showMessage("別のAIコマンドを実行中です。"); return end
   if type(promptPath) ~= "string" or promptPath == "" or type(model) ~= "string" or model == ""
-      or (mode ~= "display" and mode ~= "replace") or type(input) ~= "string" then
+      or type(input) ~= "string" then
     showSafeError(); return false
   end
   local promptOK, template = readFile(promptPath)
@@ -490,11 +405,168 @@ runCommand = function(promptPath, model, mode, input, target, priorSnapshot, mod
   if not renderedOK then showSafeError(); return end
   prompt = prompt:gsub("%s+$", "")
   operationSequence = operationSequence + 1
-  local state = { token = operationSequence, done = false, keyTask = nil, watchdog = nil,
-    priorSnapshot = priorSnapshot }
+  local state = { token = operationSequence, done = false, keyTask = nil, helperTask = nil, watchdog = nil }
   activeTask = state
   hud.show("Gemini処理中...")
-  startKeychain(state, { model = model, model_failover = modelFailover }, prompt, target)
+  startKeychain(state, { model = model, model_failover = modelFailover }, prompt)
+  return true
+end
+
+local function replacementHelperPath()
+  local source = debug and debug.getinfo and debug.getinfo(1, "S")
+  source = source and source.source or ""
+  if source:sub(1, 1) == "@" then source = source:sub(2) end
+  local root = source:match("^(.*)/actions/ai_commands%.lua$")
+  if not root or root == "" then root = "." end
+  return root .. "/helpers/replacement-engine/.build/release/replacement-engine"
+end
+
+local function protocolFailure(state)
+  release(state, true)
+end
+
+local function processHelperEvent(state, event)
+  if not isActive(state) or type(event) ~= "table" or type(event.event) ~= "string" then
+    protocolFailure(state); return
+  end
+
+  if event.event == "capture" then
+    if state.captureReceived or type(event.selection) ~= "string" or event.selection == ""
+        or type(event.replacement_eligible) ~= "boolean" or type(event.reason) ~= "string" then
+      protocolFailure(state); return
+    end
+    state.captureReceived = true
+    state.replacementEligible = event.replacement_eligible
+    stopTimer(state.watchdog)
+    state.watchdog = nil
+    local renderedOK, prompt = replacePromptPlaceholders(state.promptTemplate, event.selection)
+    if not renderedOK then protocolFailure(state); return end
+    prompt = prompt:gsub("%s+$", "")
+    startKeychain(state, state.command, prompt)
+    return
+  end
+
+  if event.event == "outcome" then
+    if not state.captureReceived or not state.waitingOutcome or type(event.outcome) ~= "string" then
+      protocolFailure(state); return
+    end
+    local outcome = event.outcome
+    if outcome == "verified_replaced" or outcome == "replacement_dispatched_unverified" then
+      release(state)
+      return
+    end
+    if outcome == "not_replaced" then
+      local response = state.pendingResponse
+      release(state)
+      if response then showResult(response) else showSafeError() end
+      return
+    end
+    if outcome == "error" then
+      release(state, true)
+      return
+    end
+    protocolFailure(state)
+    return
+  end
+
+  protocolFailure(state)
+end
+
+local function consumeHelperOutput(state, stdout)
+  if not isActive(state) or type(stdout) ~= "string" or stdout == "" then return end
+  state.helperBuffer = (state.helperBuffer or "") .. stdout
+  while isActive(state) do
+    local newline = state.helperBuffer:find("\n", 1, true)
+    if not newline then return end
+    local line = state.helperBuffer:sub(1, newline - 1)
+    state.helperBuffer = state.helperBuffer:sub(newline + 1)
+    if line ~= "" then
+      local ok, event = pcall(hs.json.decode, line)
+      if not ok or type(event) ~= "table" then protocolFailure(state); return end
+      processHelperEvent(state, event)
+    end
+  end
+end
+
+handleReplacementResponse = function(state, response)
+  if not isActive(state) then return end
+  if not state.replacementEligible then
+    release(state)
+    showResult(response)
+    return
+  end
+  local helper = state.helperTask
+  if not helper or type(helper.setInput) ~= "function" then release(state, true); return end
+  local encodeOK, encoded = pcall(hs.json.encode, { replacement = response })
+  if not encodeOK or type(encoded) ~= "string" then release(state, true); return end
+
+  state.pendingResponse = response
+  state.waitingOutcome = true
+  local timerOK, timer = scheduleTimer(keychainTimeout, function()
+    if isActive(state) and state.waitingOutcome then release(state, true) end
+  end)
+  if not timerOK then release(state, true); return end
+  state.watchdog = timer
+
+  local inputOK, inputResult = pcall(helper.setInput, helper, encoded .. "\n")
+  if not inputOK or inputResult == false then release(state, true); return end
+  if type(helper.closeInput) == "function" then
+    local closeOK = pcall(helper.closeInput, helper)
+    if not closeOK then release(state, true) end
+  end
+end
+
+local function startReplacementSession(promptPath, model, modelFailover)
+  if activeTask then
+    if activeTask.replacementSession then M.stop() else showMessage("別のAIコマンドを実行中です。"); return false end
+  end
+  local promptOK, template = readFile(promptPath)
+  if not promptOK then showSafeError(); return false end
+
+  operationSequence = operationSequence + 1
+  local state = {
+    token = operationSequence,
+    done = false,
+    replacementSession = true,
+    captureReceived = false,
+    replacementEligible = false,
+    waitingOutcome = false,
+    helperBuffer = "",
+    helperTask = nil,
+    keyTask = nil,
+    watchdog = nil,
+    promptTemplate = template,
+    command = { model = model, model_failover = modelFailover },
+  }
+  activeTask = state
+  hud.show("Gemini処理中...")
+
+  local function helperCallback(exitCode, stdout, _)
+    if not isActive(state) then return end
+    if type(stdout) == "string" and stdout ~= "" then consumeHelperOutput(state, stdout) end
+    if not isActive(state) then return end
+    if exitCode ~= 0 or not state.captureReceived or state.waitingOutcome then
+      release(state, true)
+      return
+    end
+    release(state, true)
+  end
+
+  local function streamCallback(_, stdout, _)
+    consumeHelperOutput(state, stdout)
+    return isActive(state)
+  end
+
+  local helper = createStreamingTask(replacementHelperPath(), helperCallback, streamCallback, {})
+  if not helper then release(state, true); return false end
+  state.helperTask = helper
+  if not startTask(helper) then release(state, true); return false end
+
+  local timerOK, timer = scheduleTimer(keychainTimeout, function()
+    if isActive(state) and not state.captureReceived then release(state, true) end
+  end)
+  if not timerOK then release(state, true); return false end
+  state.watchdog = timer
   return true
 end
 
@@ -504,28 +576,26 @@ function M.run(promptPath, model, mode, modelFailover)
       or (modelFailover ~= nil and (type(modelFailover) ~= "string" or modelFailover == "" or modelFailover == model)) then
     showSafeError(); return false
   end
+
+  if mode == "replace" then
+    return startReplacementSession(promptPath, model, modelFailover)
+  end
+
+  if activeTask and activeTask.replacementSession then M.stop() end
   local target
   local appOK, app = pcall(hs.application.frontmostApplication)
   if appOK then target = app end
-  if mode == "replace" and not target then showSafeError(); return false end
   local powerPoint = isPowerPoint(target)
-  local selection, acquired, selectionElement = acquireSelection()
+  local selection, acquired = acquireSelection()
   if not acquired then
-    if powerPoint then return runPowerPointFallback(promptPath, model, mode, target, modelFailover) end
-    return runClipboardFallback(promptPath, model, mode, modelFailover, target)
+    if powerPoint then return runPowerPointFallback(promptPath, model, target, modelFailover) end
+    return runClipboardFallback(promptPath, model, modelFailover, target)
   end
   if selection == "" then
     runPrompt(promptPath, model, modelFailover)
     return true
   end
-  local priorSnapshot
-  local replaceTarget = mode == "replace" and canReplace(selectionElement) and target or nil
-  if replaceTarget then
-    local priorOK, snapshot, count = clipboardSnapshot()
-    if not priorOK then showSafeError(); return false end
-    priorSnapshot = { snapshot = snapshot, count = count }
-  end
-  return runCommand(promptPath, model, mode, selection, replaceTarget, priorSnapshot, modelFailover)
+  return runCommand(promptPath, model, selection, modelFailover)
 end
 
 return M

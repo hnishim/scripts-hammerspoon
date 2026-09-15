@@ -15,6 +15,17 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check diff whitespace
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
+          else
+            git diff --check HEAD^...HEAD
+          fi
 
       - name: Install Lua
         run: |
@@ -25,3 +36,12 @@ jobs:
 
       - name: Run repository tests
         run: bash tests/ci_test.sh
+
+  swift-test:
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Run replacement helper tests
+        run: swift test --package-path helpers/replacement-engine
