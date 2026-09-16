@@ -35,6 +35,12 @@ enum ReplacementDiagnostic {
 }
 
 enum ProductionReplacementEngine {
+    static func mayDispatch(_ revalidation: TargetRevalidationResult) -> Bool {
+        revalidation.decision == .replacementEligible
+            && revalidation.identity != .none
+            && revalidation.fieldState == .stable
+    }
+
     static func replace(
         capture: ProductionTargetCapture,
         replacement: String,
@@ -43,7 +49,7 @@ enum ProductionReplacementEngine {
     ) -> ProductionReplacementResult {
         let revalidation = ProductionTargetCaptureEngine.revalidationResult(capture)
         guard capture.replacementEligible,
-              revalidation.decision == .replacementEligible else {
+              mayDispatch(revalidation) else {
             return ProductionReplacementResult(
                 outcome: .notReplaced,
                 strategy: nil,
@@ -53,16 +59,26 @@ enum ProductionReplacementEngine {
 
         do {
             let transaction = try ClipboardTransaction()
-            guard ProductionTargetCaptureEngine.identityOnlyKind(capture) != .none else {
+            let postSnapshotRevalidation = ProductionTargetCaptureEngine.revalidationResult(capture)
+            guard mayDispatch(postSnapshotRevalidation) else {
                 return ProductionReplacementResult(
                     outcome: .notReplaced,
                     strategy: nil,
-                    reason: "final_target_identity_failed"
+                    reason: "post_snapshot_\(postSnapshotRevalidation.reason)"
                 )
             }
 
             do {
                 try transaction.writeReplacement(replacement)
+                let prePasteRevalidation = ProductionTargetCaptureEngine.revalidationResult(capture)
+                guard mayDispatch(prePasteRevalidation) else {
+                    _ = transaction.restoreIfUntouched()
+                    return ProductionReplacementResult(
+                        outcome: .notReplaced,
+                        strategy: nil,
+                        reason: "pre_paste_\(prePasteRevalidation.reason)"
+                    )
+                }
                 try KeyEvents.chord(keyCode: CGKeyCode(kVK_ANSI_V), flags: .maskCommand)
             } catch {
                 _ = transaction.restoreIfUntouched()

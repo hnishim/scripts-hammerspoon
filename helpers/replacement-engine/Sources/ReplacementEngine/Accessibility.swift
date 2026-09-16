@@ -162,7 +162,7 @@ enum ProductionTargetCaptureEngine {
             throw EngineError.selectionUnavailable
         }
 
-        let mutation = mutationCandidate(
+        let resolvedMutation = mutationCandidate(
             bundleID: bundleID,
             pid: pid,
             appElement: appElement,
@@ -170,14 +170,25 @@ enum ProductionTargetCaptureEngine {
             focusedWindow: focusedWindow,
             systemFocused: systemFocused
         )
+        let mutation = resolvedMutation.flatMap { candidate -> Candidate? in
+            let identity = identityKind(
+                capturedTarget: selectionCandidate.element,
+                capturedSnapshot: selectionCandidate.snapshot,
+                current: candidate
+            )
+            return mutationMatchesSelectionSource(
+                selection: selectionCandidate.snapshot,
+                mutation: candidate.snapshot,
+                identity: identity
+            ) ? candidate : nil
+        }
 
-        let sourceCandidate = mutation ?? selectionCandidate
-        let acquisition = try acquireSelection(from: sourceCandidate, pid: pid)
+        let acquisition = try acquireSelection(from: selectionCandidate, pid: pid)
         let replacementEligible = mutation != nil && focusedWindow != nil
         let reason: String
         if replacementEligible {
             reason = "editable_selection"
-        } else if sourceCandidate.snapshot.editabilityEvidence == .none {
+        } else if selectionCandidate.snapshot.editabilityEvidence == .none {
             reason = "non_editable_selection"
         } else {
             reason = "editable_target_unverified"
@@ -193,10 +204,47 @@ enum ProductionTargetCaptureEngine {
             selectedText: mutation?.snapshot.selectedText,
             selection: acquisition.text,
             selectionSource: acquisition.source,
-            selectionEditabilityEvidence: sourceCandidate.snapshot.editabilityEvidence,
+            selectionEditabilityEvidence: selectionCandidate.snapshot.editabilityEvidence,
             replacementEligible: replacementEligible,
             reason: reason
         )
+    }
+
+    static func mutationMatchesSelectionSource(
+        selection: MagicFieldSnapshot,
+        mutation: MagicFieldSnapshot,
+        identity: TargetIdentityKind
+    ) -> Bool {
+        guard identity != .none,
+              !selection.secure,
+              !mutation.secure,
+              selection.editable,
+              mutation.editable,
+              let selectionRange = selection.selectedRange,
+              let mutationRange = mutation.selectedRange,
+              selectionRange.location >= 0,
+              selectionRange.length > 0,
+              selectionRange.location == mutationRange.location,
+              selectionRange.length == mutationRange.length else {
+            return false
+        }
+
+        if let selectionValue = selection.value,
+           let mutationValue = mutation.value,
+           selectionValue != mutationValue {
+            return false
+        }
+
+        let selectionText = selection.selectedText
+            ?? selection.value.flatMap { UTF16RangeCodec.substring(selectionRange, in: $0) }
+        let mutationText = mutation.selectedText
+            ?? mutation.value.flatMap { UTF16RangeCodec.substring(mutationRange, in: $0) }
+
+        guard let selectionText, !selectionText.isEmpty,
+              let mutationText, selectionText == mutationText else {
+            return false
+        }
+        return true
     }
 
     static func revalidate(_ capture: ProductionTargetCapture) -> TargetPolicyDecision {
