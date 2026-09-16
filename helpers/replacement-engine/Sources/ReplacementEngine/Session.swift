@@ -10,10 +10,10 @@ struct ProductionReplacementResult {
 
 enum ReplacementDiagnostic {
     private static let path = "/tmp/hir-235-replacement.log"
-    private static let marker = "hir235-diagnostic-v1"
+    private static let marker = "hir258-magic-model-poc-v1"
 
     static func recordCapture(_ capture: ProductionTargetCapture) {
-        let line = "marker=\(marker) stage=capture app=\(capture.appBundleID) eligible=\(capture.replacementEligible) reason=\(capture.reason)\n"
+        let line = "marker=\(marker) stage=capture app=\(capture.appBundleID) eligible=\(capture.replacementEligible) source=\(capture.selectionSource.rawValue) editability=\(capture.selectionEditabilityEvidence.rawValue) reason=\(capture.reason)\n"
         FileManager.default.createFile(atPath: path, contents: Data(line.utf8))
     }
 
@@ -35,24 +35,50 @@ enum ReplacementDiagnostic {
 }
 
 enum ProductionReplacementEngine {
+    static func mayDispatch(_ revalidation: TargetRevalidationResult) -> Bool {
+        revalidation.decision == .replacementEligible
+            && revalidation.identity != .none
+            && revalidation.fieldState == .stable
+    }
+
     static func replace(
         capture: ProductionTargetCapture,
         replacement: String,
-        pasteHoldMilliseconds: Int = 150
+        pasteHoldMilliseconds: Int = 150,
+        confirmationMilliseconds: Int = 300
     ) -> ProductionReplacementResult {
+        let revalidation = ProductionTargetCaptureEngine.revalidationResult(capture)
         guard capture.replacementEligible,
-              ProductionTargetCaptureEngine.revalidate(capture) == .replacementEligible else {
+              mayDispatch(revalidation) else {
             return ProductionReplacementResult(
                 outcome: .notReplaced,
                 strategy: nil,
-                reason: "target_revalidation_failed"
+                reason: revalidation.reason
             )
         }
 
         do {
             let transaction = try ClipboardTransaction()
+            let postSnapshotRevalidation = ProductionTargetCaptureEngine.revalidationResult(capture)
+            guard mayDispatch(postSnapshotRevalidation) else {
+                return ProductionReplacementResult(
+                    outcome: .notReplaced,
+                    strategy: nil,
+                    reason: "post_snapshot_\(postSnapshotRevalidation.reason)"
+                )
+            }
+
             do {
                 try transaction.writeReplacement(replacement)
+                let prePasteRevalidation = ProductionTargetCaptureEngine.revalidationResult(capture)
+                guard mayDispatch(prePasteRevalidation) else {
+                    _ = transaction.restoreIfUntouched()
+                    return ProductionReplacementResult(
+                        outcome: .notReplaced,
+                        strategy: nil,
+                        reason: "pre_paste_\(prePasteRevalidation.reason)"
+                    )
+                }
                 try KeyEvents.chord(keyCode: CGKeyCode(kVK_ANSI_V), flags: .maskCommand)
             } catch {
                 _ = transaction.restoreIfUntouched()
@@ -63,14 +89,42 @@ enum ProductionReplacementEngine {
                 )
             }
 
-            if pasteHoldMilliseconds > 0 {
-                Thread.sleep(forTimeInterval: Double(pasteHoldMilliseconds) / 1000.0)
+            let dispatchTime = Date()
+            let expectedValue = capture.targetSnapshot
+                .flatMap { snapshot -> String? in
+                    guard let value = snapshot.value, let range = snapshot.selectedRange else { return nil }
+                    return UTF16RangeCodec.replacing(range, in: value, with: replacement)
+                }
+            let shouldConfirm = expectedValue != nil && expectedValue != capture.targetSnapshot?.value
+            var confirmed = false
+            if shouldConfirm, let expectedValue {
+                let deadline = Date().addingTimeInterval(Double(max(0, confirmationMilliseconds)) / 1000.0)
+                repeat {
+                    if ProductionTargetCaptureEngine.currentValueIfSameTarget(capture) == expectedValue {
+                        confirmed = true
+                        break
+                    }
+                    if Date() < deadline {
+                        Thread.sleep(forTimeInterval: 0.02)
+                    }
+                } while Date() < deadline
             }
+
+            let elapsed = Date().timeIntervalSince(dispatchTime)
+            let minimumHold = Double(max(0, pasteHoldMilliseconds)) / 1000.0
+            if elapsed < minimumHold {
+                Thread.sleep(forTimeInterval: minimumHold - elapsed)
+            }
+
             let restored = transaction.restoreIfUntouched()
+            let outcome: ReplacementOutcome = confirmed
+                ? .verifiedReplaced
+                : .replacementDispatchedUnverified
+            let baseReason = confirmed ? "paste_verified" : "paste_dispatched_unverified"
             return ProductionReplacementResult(
-                outcome: .replacementDispatchedUnverified,
+                outcome: outcome,
                 strategy: .paste,
-                reason: restored ? "paste_dispatched_unverified" : "paste_dispatched_clipboard_changed"
+                reason: restored ? baseReason : "\(baseReason)_clipboard_changed"
             )
         } catch {
             return ProductionReplacementResult(

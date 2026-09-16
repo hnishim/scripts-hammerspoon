@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Darwin
 import Foundation
 
 enum AX {
@@ -38,6 +39,34 @@ enum AX {
         var range = CFRange()
         guard AXValueGetValue(axValue, .cfRange, &range) else { return nil }
         return range
+    }
+
+    static func isAttributeSettable(_ element: AXUIElement, _ attribute: CFString) -> Bool {
+        var settable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(element, attribute, &settable) == .success else { return false }
+        return settable.boolValue
+    }
+
+    static func frame(_ element: AXUIElement) -> CGRect? {
+        guard let positionRef = copyAttribute(element, kAXPositionAttribute as CFString),
+              CFGetTypeID(positionRef) == AXValueGetTypeID(),
+              let sizeRef = copyAttribute(element, kAXSizeAttribute as CFString),
+              CFGetTypeID(sizeRef) == AXValueGetTypeID() else { return nil }
+        let position = unsafeBitCast(positionRef, to: AXValue.self)
+        let size = unsafeBitCast(sizeRef, to: AXValue.self)
+        var origin = CGPoint.zero
+        var dimensions = CGSize.zero
+        guard AXValueGetType(position) == .cgPoint,
+              AXValueGetType(size) == .cgSize,
+              AXValueGetValue(position, .cgPoint, &origin),
+              AXValueGetValue(size, .cgSize, &dimensions) else { return nil }
+        return CGRect(origin: origin, size: dimensions)
+    }
+
+    static func pid(_ element: AXUIElement) -> pid_t? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success, pid > 0 else { return nil }
+        return pid
     }
 }
 
@@ -88,14 +117,6 @@ enum TargetResolver {
         return nil
     }
 
-    static func unresolvedReason(bundleID: String, appFocused: AXUIElement?) -> String {
-        guard selectorBundles.contains(bundleID) else { return "resolved_target_unavailable" }
-        guard let appFocused else { return "app_focused_target_unavailable" }
-        guard isTextAreaCandidate(appFocused) else { return "app_focused_target_role_mismatch" }
-        guard hasSelectionContext(appFocused) else { return "app_focused_selection_unavailable" }
-        return "resolved_target_unavailable"
-    }
-
     private static func isTextAreaCandidate(_ element: AXUIElement) -> Bool {
         AX.stringAttribute(element, kAXRoleAttribute as CFString) == kAXTextAreaRole as String
     }
@@ -112,6 +133,11 @@ enum TargetResolver {
 }
 
 enum ProductionTargetCaptureEngine {
+    private struct Candidate {
+        let element: AXUIElement
+        let snapshot: MagicFieldSnapshot
+    }
+
     static func capture() throws -> ProductionTargetCapture {
         guard let app = NSWorkspace.shared.frontmostApplication,
               let bundleID = app.bundleIdentifier,
@@ -127,127 +153,361 @@ enum ProductionTargetCaptureEngine {
             AXUIElementCreateSystemWide(),
             kAXFocusedUIElementAttribute as CFString
         )
-        let target = TargetResolver.resolve(
+
+        guard let selectionCandidate = selectionCandidate(
+            pid: pid,
+            appFocused: appFocused,
+            systemFocused: systemFocused
+        ), !selectionCandidate.snapshot.secure else {
+            throw EngineError.selectionUnavailable
+        }
+
+        let resolvedMutation = mutationCandidate(
             bundleID: bundleID,
+            pid: pid,
             appElement: appElement,
             appFocused: appFocused,
             focusedWindow: focusedWindow,
             systemFocused: systemFocused
         )
-        let selectedRange = target.flatMap { AX.rangeAttribute($0, kAXSelectedTextRangeAttribute as CFString) }
-        let selectedText = target
-            .flatMap { AX.stringAttribute($0, kAXSelectedTextAttribute as CFString) }
-            .flatMap { $0.isEmpty ? nil : $0 }
+        let mutation = resolvedMutation.flatMap { candidate -> Candidate? in
+            let identity = identityKind(
+                capturedTarget: selectionCandidate.element,
+                capturedSnapshot: selectionCandidate.snapshot,
+                current: candidate
+            )
+            return mutationMatchesSelectionSource(
+                selection: selectionCandidate.snapshot,
+                mutation: candidate.snapshot,
+                identity: identity
+            ) ? candidate : nil
+        }
 
-        let decision = ProductionTargetPolicy.captureDecision(
-            hasAppBundleID: !bundleID.isEmpty,
-            hasPID: pid > 0,
-            hasFocusedWindow: focusedWindow != nil,
-            hasResolvedTarget: target != nil,
-            selectedRange: selectedRange
-        )
-        let eligible = decision == .replacementEligible
-        let reason = captureReason(
-            bundleID: bundleID,
-            pid: pid,
-            appFocused: appFocused,
-            focusedWindow: focusedWindow,
-            target: target,
-            selectedRange: selectedRange,
-            eligible: eligible
-        )
-
-        let selection: String
-        if let selectedText {
-            selection = selectedText
-        } else if let copied = try SelectionProbe.captureByCopy(), !copied.isEmpty {
-            selection = copied
+        let acquisition = try acquireSelection(from: selectionCandidate, pid: pid)
+        let replacementEligible = mutation != nil && focusedWindow != nil
+        let reason: String
+        if replacementEligible {
+            reason = "editable_selection"
+        } else if selectionCandidate.snapshot.editabilityEvidence == .none {
+            reason = "non_editable_selection"
         } else {
-            throw EngineError.selectionUnavailable
+            reason = "editable_target_unverified"
         }
 
         return ProductionTargetCapture(
             appBundleID: bundleID,
             pid: pid,
             focusedWindow: focusedWindow,
-            target: target,
-            selectedRange: selectedRange,
-            selectedText: selectedText,
-            selection: selection,
-            replacementEligible: eligible,
+            target: mutation?.element,
+            targetSnapshot: mutation?.snapshot,
+            selectedRange: mutation?.snapshot.selectedRange,
+            selectedText: mutation?.snapshot.selectedText,
+            selection: acquisition.text,
+            selectionSource: acquisition.source,
+            selectionEditabilityEvidence: selectionCandidate.snapshot.editabilityEvidence,
+            replacementEligible: replacementEligible,
             reason: reason
         )
     }
 
-    static func revalidate(_ capture: ProductionTargetCapture) -> TargetPolicyDecision {
-        guard capture.replacementEligible,
-              let app = NSWorkspace.shared.frontmostApplication,
-              let bundleID = app.bundleIdentifier else {
-            return .notReplaced
+    static func mutationMatchesSelectionSource(
+        selection: MagicFieldSnapshot,
+        mutation: MagicFieldSnapshot,
+        identity: TargetIdentityKind
+    ) -> Bool {
+        guard identity != .none,
+              !selection.secure,
+              !mutation.secure,
+              selection.editable,
+              mutation.editable,
+              let selectionRange = selection.selectedRange,
+              let mutationRange = mutation.selectedRange,
+              selectionRange.location >= 0,
+              selectionRange.length > 0,
+              selectionRange.location == mutationRange.location,
+              selectionRange.length == mutationRange.length else {
+            return false
         }
 
-        let currentPID = app.processIdentifier
-        let appElement = AXUIElementCreateApplication(currentPID)
+        if let selectionValue = selection.value,
+           let mutationValue = mutation.value,
+           selectionValue != mutationValue {
+            return false
+        }
+
+        let selectionText = selection.selectedText
+            ?? selection.value.flatMap { UTF16RangeCodec.substring(selectionRange, in: $0) }
+        let mutationText = mutation.selectedText
+            ?? mutation.value.flatMap { UTF16RangeCodec.substring(mutationRange, in: $0) }
+
+        guard let selectionText, !selectionText.isEmpty,
+              let mutationText, selectionText == mutationText else {
+            return false
+        }
+        return true
+    }
+
+    static func revalidate(_ capture: ProductionTargetCapture) -> TargetPolicyDecision {
+        revalidationResult(capture).decision
+    }
+
+    static func revalidationResult(_ capture: ProductionTargetCapture) -> TargetRevalidationResult {
+        guard capture.replacementEligible,
+              let capturedTarget = capture.target,
+              let capturedSnapshot = capture.targetSnapshot,
+              let context = currentContext(for: capture) else {
+            return TargetRevalidationResult(
+                decision: .notReplaced,
+                identity: .none,
+                fieldState: .unverifiable,
+                reason: "context_unavailable"
+            )
+        }
+
+        guard context.bundleID == capture.appBundleID,
+              context.pid == capture.pid,
+              windowsMatch(capture.focusedWindow, context.focusedWindow) else {
+            return TargetRevalidationResult(
+                decision: .notReplaced,
+                identity: .none,
+                fieldState: .unverifiable,
+                reason: "app_or_window_drift"
+            )
+        }
+
+        let identity = identityKind(
+            capturedTarget: capturedTarget,
+            capturedSnapshot: capturedSnapshot,
+            current: context.mutation
+        )
+        guard identity != .none, let current = context.mutation else {
+            return TargetRevalidationResult(
+                decision: .notReplaced,
+                identity: .none,
+                fieldState: .unverifiable,
+                reason: "target_identity_unavailable"
+            )
+        }
+
+        let fieldState = FieldStatePolicy.validate(
+            capturedValue: capturedSnapshot.value,
+            currentValue: current.snapshot.value,
+            capturedRange: capturedSnapshot.selectedRange,
+            currentRange: current.snapshot.selectedRange
+        )
+        guard fieldState == .stable else {
+            let reason = fieldState == .selectionCollapsed
+                ? "selection_collapsed_reassert_unverified"
+                : "field_state_drift"
+            return TargetRevalidationResult(
+                decision: .notReplaced,
+                identity: identity,
+                fieldState: fieldState,
+                reason: reason
+            )
+        }
+
+        return TargetRevalidationResult(
+            decision: .replacementEligible,
+            identity: identity,
+            fieldState: fieldState,
+            reason: "stable_target"
+        )
+    }
+
+    static func identityOnlyKind(_ capture: ProductionTargetCapture) -> TargetIdentityKind {
+        guard capture.replacementEligible,
+              let capturedTarget = capture.target,
+              let capturedSnapshot = capture.targetSnapshot,
+              let context = currentContext(for: capture),
+              context.bundleID == capture.appBundleID,
+              context.pid == capture.pid,
+              windowsMatch(capture.focusedWindow, context.focusedWindow) else {
+            return .none
+        }
+        return identityKind(
+            capturedTarget: capturedTarget,
+            capturedSnapshot: capturedSnapshot,
+            current: context.mutation
+        )
+    }
+
+    static func currentValueIfSameTarget(_ capture: ProductionTargetCapture) -> String? {
+        guard capture.replacementEligible,
+              let capturedTarget = capture.target,
+              let capturedSnapshot = capture.targetSnapshot,
+              let context = currentContext(for: capture),
+              context.bundleID == capture.appBundleID,
+              context.pid == capture.pid,
+              windowsMatch(capture.focusedWindow, context.focusedWindow),
+              identityKind(
+                capturedTarget: capturedTarget,
+                capturedSnapshot: capturedSnapshot,
+                current: context.mutation
+              ) != .none else { return nil }
+        return context.mutation?.snapshot.value
+    }
+
+    private static func fieldSnapshot(_ element: AXUIElement) -> MagicFieldSnapshot? {
+        guard let role = AX.stringAttribute(element, kAXRoleAttribute as CFString) else { return nil }
+        let subrole = AX.stringAttribute(element, kAXSubroleAttribute as CFString)
+        let secure = role == "AXSecureTextField" || subrole == "AXSecureTextField"
+        if secure {
+            return MagicFieldSnapshot(
+                role: role,
+                subrole: subrole,
+                frame: AX.frame(element),
+                value: nil,
+                selectedRange: nil,
+                selectedText: nil,
+                editabilityEvidence: .none,
+                secure: true
+            )
+        }
+
+        let evidence = EditabilityPolicy.classify(
+            role: role,
+            valueSettable: AX.isAttributeSettable(element, kAXValueAttribute as CFString)
+        )
+        let value = AX.stringAttribute(element, kAXValueAttribute as CFString)
+        let selectedRange = AX.rangeAttribute(element, kAXSelectedTextRangeAttribute as CFString)
+        let selectedText = AX.stringAttribute(element, kAXSelectedTextAttribute as CFString)
+            .flatMap { $0.isEmpty ? nil : $0 }
+
+        return MagicFieldSnapshot(
+            role: role,
+            subrole: subrole,
+            frame: AX.frame(element),
+            value: value,
+            selectedRange: selectedRange,
+            selectedText: selectedText,
+            editabilityEvidence: evidence,
+            secure: false
+        )
+    }
+
+    private static func selectionCandidate(
+        pid: pid_t,
+        appFocused: AXUIElement?,
+        systemFocused: AXUIElement?
+    ) -> Candidate? {
+        if let appFocused, AX.pid(appFocused) == pid {
+            guard let snapshot = fieldSnapshot(appFocused) else { return nil }
+            return Candidate(element: appFocused, snapshot: snapshot)
+        }
+        if let systemFocused, AX.pid(systemFocused) == pid,
+           let snapshot = fieldSnapshot(systemFocused) {
+            return Candidate(element: systemFocused, snapshot: snapshot)
+        }
+        return nil
+    }
+
+    private static func mutationCandidate(
+        bundleID: String,
+        pid: pid_t,
+        appElement: AXUIElement,
+        appFocused: AXUIElement?,
+        focusedWindow: AXUIElement?,
+        systemFocused: AXUIElement?
+    ) -> Candidate? {
+        for element in [appFocused, systemFocused].compactMap({ $0 }) where AX.pid(element) == pid {
+            guard let snapshot = fieldSnapshot(element), isMutationCandidate(snapshot) else { continue }
+            return Candidate(element: element, snapshot: snapshot)
+        }
+
+        guard let resolved = TargetResolver.resolve(
+            bundleID: bundleID,
+            appElement: appElement,
+            appFocused: appFocused,
+            focusedWindow: focusedWindow,
+            systemFocused: systemFocused
+        ), AX.pid(resolved) == pid,
+           let snapshot = fieldSnapshot(resolved),
+           isMutationCandidate(snapshot) else { return nil }
+        return Candidate(element: resolved, snapshot: snapshot)
+    }
+
+    private static func isMutationCandidate(_ snapshot: MagicFieldSnapshot) -> Bool {
+        guard !snapshot.secure,
+              snapshot.editable,
+              let range = snapshot.selectedRange,
+              range.location >= 0,
+              range.length > 0 else { return false }
+        return true
+    }
+
+    private static func acquireSelection(
+        from candidate: Candidate,
+        pid: pid_t
+    ) throws -> (text: String, source: SelectionSourceKind) {
+        if let selectedText = candidate.snapshot.selectedText, !selectedText.isEmpty {
+            return (selectedText, .axSelectedText)
+        }
+
+        if let selectedRange = candidate.snapshot.selectedRange,
+           let value = candidate.snapshot.value,
+           let recovered = UTF16RangeCodec.substring(selectedRange, in: value),
+           !recovered.isEmpty {
+            return (recovered, .axRangeValue)
+        }
+
+        guard SelectionAcquisitionPolicy.shouldUseCopyFallback(
+            isEditable: candidate.snapshot.editable,
+            selectedRange: candidate.snapshot.selectedRange,
+            selectionRecovered: false
+        ), NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+            throw EngineError.selectionUnavailable
+        }
+
+        guard let copied = try SelectionProbe.captureByCopy(),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              !copied.isEmpty else {
+            throw EngineError.selectionUnavailable
+        }
+        return (copied, .clipboardCopy)
+    }
+
+    private static func currentContext(for capture: ProductionTargetCapture) -> (
+        bundleID: String,
+        pid: pid_t,
+        focusedWindow: AXUIElement?,
+        mutation: Candidate?
+    )? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let bundleID = app.bundleIdentifier else { return nil }
+        let pid = app.processIdentifier
+        let appElement = AXUIElementCreateApplication(pid)
         let appFocused = AX.elementAttribute(appElement, kAXFocusedUIElementAttribute as CFString)
         let focusedWindow = AX.elementAttribute(appElement, kAXFocusedWindowAttribute as CFString)
         let systemFocused = AX.elementAttribute(
             AXUIElementCreateSystemWide(),
             kAXFocusedUIElementAttribute as CFString
         )
-        let target = TargetResolver.resolve(
+        let mutation = mutationCandidate(
             bundleID: bundleID,
+            pid: pid,
             appElement: appElement,
             appFocused: appFocused,
             focusedWindow: focusedWindow,
             systemFocused: systemFocused
         )
-        let currentRange = target.flatMap { AX.rangeAttribute($0, kAXSelectedTextRangeAttribute as CFString) }
-        let currentSelectedText = target
-            .flatMap { AX.stringAttribute($0, kAXSelectedTextAttribute as CFString) }
-            .flatMap { $0.isEmpty ? nil : $0 }
-
-        let windowMatches: Bool
-        if let capturedWindow = capture.focusedWindow, let focusedWindow {
-            windowMatches = CFEqual(capturedWindow, focusedWindow)
-        } else {
-            windowMatches = false
-        }
-
-        let targetMatches: Bool
-        if let capturedTarget = capture.target, let target {
-            targetMatches = CFEqual(capturedTarget, target)
-        } else {
-            targetMatches = false
-        }
-
-        return ProductionTargetPolicy.revalidationDecision(
-            appMatches: bundleID == capture.appBundleID,
-            pidMatches: currentPID == capture.pid,
-            windowMatches: windowMatches,
-            targetMatches: targetMatches,
-            capturedRange: capture.selectedRange,
-            currentRange: currentRange,
-            capturedSelectedText: capture.selectedText,
-            currentSelectedText: currentSelectedText
-        )
+        return (bundleID, pid, focusedWindow, mutation)
     }
 
-    private static func captureReason(
-        bundleID: String,
-        pid: pid_t,
-        appFocused: AXUIElement?,
-        focusedWindow: AXUIElement?,
-        target: AXUIElement?,
-        selectedRange: CFRange?,
-        eligible: Bool
-    ) -> String {
-        if eligible { return "strong_identity" }
-        if pid <= 0 { return "process_identity_unavailable" }
-        if focusedWindow == nil { return "focused_window_unavailable" }
-        if target == nil { return TargetResolver.unresolvedReason(bundleID: bundleID, appFocused: appFocused) }
-        guard let selectedRange, selectedRange.location >= 0, selectedRange.length > 0 else {
-            return "selected_range_unavailable"
-        }
-        return "identity_unavailable"
+    private static func windowsMatch(_ captured: AXUIElement?, _ current: AXUIElement?) -> Bool {
+        guard let captured, let current else { return false }
+        return CFEqual(captured, current)
+    }
+
+    private static func identityKind(
+        capturedTarget: AXUIElement,
+        capturedSnapshot: MagicFieldSnapshot,
+        current: Candidate?
+    ) -> TargetIdentityKind {
+        guard let current else { return .none }
+        if CFEqual(capturedTarget, current.element) { return .exact }
+        return StructuralIdentityPolicy.matches(captured: capturedSnapshot, current: current.snapshot)
+            ? .structural
+            : .none
     }
 }
