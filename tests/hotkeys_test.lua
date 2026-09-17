@@ -146,7 +146,7 @@ package.preload["components.hud"] = function() return {} end
 
 local home = os.getenv("HOME") or ""
 local promptDir = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/prompts/ai-commands/"
-local raycastRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/raycast/"
+local commandsRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/commands/"
 local hammerspoonExternalScriptsRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/hammerspoon/external_scripts/"
 local expected = {
   { modifiers = { "cmd", "alt", "shift" }, key = "b",
@@ -162,7 +162,7 @@ local apps = {
   { "e", "Cursor" }, { "f", "Finder" },
   { "i", "ChatGPT" }, { "j", "Dictionaries" }, { "k", "Linear" },
   { "m", "Meru" }, { "n", "Notion" }, { "p", "Microsoft PowerPoint" },
-  { "s", "Slack" }, { "w", "1Password" }, { "z", "zoom.us" },
+  { "r", "Reminders" }, { "s", "Slack" }, { "t", "Warp" }, { "w", "1Password" }, { "z", "zoom.us" },
 }
 for _, appBinding in ipairs(apps) do
   expected[#expected + 1] = {
@@ -196,14 +196,14 @@ expected[#expected + 1] = {
 }
 expected[#expected + 1] = {
   modifiers = { "cmd", "alt", "shift" }, key = "f",
-  action = { type = "utility", executablePath = "/usr/bin/osascript", scriptPath = raycastRoot .. "two-panes-finder.applescript" },
+  action = { type = "utility", executablePath = "/usr/bin/osascript", scriptPath = commandsRoot .. "two-panes-finder.applescript" },
 }
 expected[#expected + 1] = {
   modifiers = { "cmd", "alt", "shift" }, key = "c",
-  action = { type = "utility", executablePath = "/bin/bash", scriptPath = raycastRoot .. "title-case-chicago.sh" },
+  action = { type = "utility", executablePath = "/bin/bash", scriptPath = commandsRoot .. "title-case-chicago.sh" },
 }
 local expectedCount = #expected
-assertEqual(expectedCount, 28, "test expectation contains the current 28 bindings")
+assertEqual(expectedCount, 30, "test expectation contains the current 30 bindings")
 local expectedFileNameCopy = {
   modifiers = { "cmd", "shift" }, key = "c",
   action = { type = "file_name_copy" },
@@ -240,8 +240,8 @@ local function assertBindingEqual(actual, expectedBinding, index)
   for name, value in pairs(expectedBinding.action) do
     if name == "scriptPath" and expectedBinding.action.type == "utility"
         and actual.action[name] == hammerspoonExternalScriptsRoot .. value:match("([^/]+)$")
-        and value == raycastRoot .. value:match("([^/]+)$") then
-      print("[EXPECTED_FAIL] hotkeys_config Raycast script path (known legacy external_scripts path)")
+        and value == commandsRoot .. value:match("([^/]+)$") then
+      print("[EXPECTED_FAIL] hotkeys_config commands script path (known legacy external_scripts path)")
       os.exit(0)
     end
     assertEqual(actual.action[name], value, "config binding " .. index .. " action " .. name)
@@ -336,7 +336,7 @@ assert(type(hotkeys.getLastError) == "function", "hotkeys.getLastError() must be
 local firstStartOK, firstStartResult = pcall(hotkeys.start)
 assertEqual(firstStartOK, true, "first hotkeys start completes without error")
 assertEqual(firstStartResult, true, "first hotkeys start succeeds")
-assertEqual(#bindCalls, expectedCount, "first start registers 28 regular hotkeys")
+assertEqual(#bindCalls, expectedCount, "first start registers 30 regular hotkeys")
 assertEqual(bindAttempts, expectedCount, "first start attempts the expected number of binds")
 assertEqual(#eventTapCalls, 1, "first start registers one event tap")
 assertEqual(eventTapCalls[1].started, true, "first event tap starts")
@@ -423,10 +423,10 @@ end
 
 local aiIndex = configIndexFor(expected[1])
 local appIndex = configIndexFor(expected[4])
-local windowIndex = configIndexFor(expected[18])
-local urlIndex = configIndexFor(expected[24])
-local previousIndex = configIndexFor(expected[26])
-local utilityIndex = configIndexFor(expected[27])
+local windowIndex = configIndexFor(expected[20])
+local urlIndex = configIndexFor(expected[26])
+local previousIndex = configIndexFor(expected[28])
+local utilityIndex = configIndexFor(expected[29])
 local fileNameCopyIndex = configIndexFor(expectedFileNameCopy)
 
 local changedAI = copyBinding(config[aiIndex])
@@ -448,21 +448,21 @@ changedURL.action.command = "dictionary"
 config[urlIndex] = changedURL
 local changedUtility = copyBinding(config[utilityIndex])
 changedUtility.action.executablePath = "/bin/changed-tool"
-changedUtility.action.scriptPath = raycastRoot .. "changed-script.sh"
+changedUtility.action.scriptPath = commandsRoot .. "changed-script.sh"
 config[utilityIndex] = changedUtility
 
 local changedStartOK, changedStartResult = pcall(hotkeys.start)
 assertEqual(changedStartOK, true, "configuration-only changes reload without error")
 assertEqual(changedStartResult, true, "configuration-only changes reload successfully")
-assertEqual(#bindCalls, expectedCount * 3, "configuration-only changes register 28 regular hotkeys")
+assertEqual(#bindCalls, expectedCount * 3, "configuration-only changes register 30 regular hotkeys")
 assertEqual(#eventTapCalls, 3, "configuration-only changes register one event tap")
 local changedExpected = {}
 for index, binding in ipairs(expected) do changedExpected[index] = binding end
 changedExpected[1] = changedAI
 changedExpected[4] = changedApp
-changedExpected[18] = changedWindow
-changedExpected[24] = changedURL
-changedExpected[27] = changedUtility
+changedExpected[20] = changedWindow
+changedExpected[26] = changedURL
+changedExpected[29] = changedUtility
 assertRegisteredBindings(changedExpected, expectedCount * 2 + 1)
 clearActionCalls()
 handles[signature(changedAI.modifiers, changedAI.key)].callback()
@@ -484,7 +484,7 @@ assertTableEqual(actionCalls[3].args, { "full" }, "changed window argument")
 assertEqual(actionCalls[4].name, "url", "changed URL action module")
 assertTableEqual(actionCalls[4].args, { "dictionary" }, "changed URL argument")
 assertEqual(actionCalls[5].name, "utility", "changed Utility action module")
-assertTableEqual(actionCalls[5].args, { "/bin/changed-tool", raycastRoot .. "changed-script.sh" }, "changed Utility arguments")
+assertTableEqual(actionCalls[5].args, { "/bin/changed-tool", commandsRoot .. "changed-script.sh" }, "changed Utility arguments")
 for index, binding in ipairs(originalBindings) do config[index] = binding end
 
 local restoredStartOK, restoredStartResult = pcall(hotkeys.start)
@@ -693,14 +693,14 @@ assertFailedRegistrationCleaned(false, "eventtap.new failure")
 local recoveredAfterNewFailureOK, recoveredAfterNewFailureResult = pcall(hotkeys.start)
 assertEqual(recoveredAfterNewFailureOK, true, "start recovers after eventtap.new failure")
 assertEqual(recoveredAfterNewFailureResult, true, "start succeeds after eventtap.new failure")
-assertEqual(#bindCalls, expectedCount * 6, "recovery after eventtap.new failure binds 28 regular hotkeys")
+assertEqual(#bindCalls, expectedCount * 6, "recovery after eventtap.new failure binds 30 regular hotkeys")
 assertEqual(#eventTapCalls, 5, "recovery after eventtap.new failure registers one event tap")
 
 assertFailedRegistrationCleaned(true, "eventtap start failure")
 local recoveredAfterStartFailureOK, recoveredAfterStartFailureResult = pcall(hotkeys.start)
 assertEqual(recoveredAfterStartFailureOK, true, "start recovers after eventtap start failure")
 assertEqual(recoveredAfterStartFailureResult, true, "start succeeds after eventtap start failure")
-assertEqual(#bindCalls, expectedCount * 8, "recovery after eventtap start failure binds 28 regular hotkeys")
+assertEqual(#bindCalls, expectedCount * 8, "recovery after eventtap start failure binds 30 regular hotkeys")
 assertEqual(#eventTapCalls, 7, "recovery after eventtap start failure registers one event tap")
 
 -- A valid configuration may bind partially, but every newly returned handle is
