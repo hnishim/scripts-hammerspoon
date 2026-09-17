@@ -1,4 +1,6 @@
 local M = {}
+local textIO = require("components.text_io")
+local textPrompt = require("components.text_prompt")
 
 local GOOGLE_URL = "https://www.google.com/search?q="
 local DICTIONARY_URL = "mkdictionaries:///?text="
@@ -25,64 +27,8 @@ local function encodeQuery(value)
   end))
 end
 
-local function selectedText()
-  if not hs.uielement or type(hs.uielement.focusedElement) ~= "function" then
-    alert("検索語を取得できませんでした。")
-    return nil, false
-  end
-  local focusedOK, focused = pcall(hs.uielement.focusedElement)
-  if not focusedOK then
-    alert("検索語を取得できませんでした。")
-    return nil, false
-  end
-  if focused == nil then return nil, true end
-  if type(focused.selectedText) ~= "function" then
-    alert("検索語を取得できませんでした。")
-    return nil, false
-  end
-  local selectedOK, value = pcall(focused.selectedText, focused)
-  if not selectedOK or (value ~= nil and type(value) ~= "string") then
-    alert("検索語を取得できませんでした。")
-    return nil, false
-  end
-  if value == nil or trimmed(value) == "" then return nil, true end
-  return trimmed(value), true
-end
-
-local function inputText()
-  if not hs.dialog or type(hs.dialog.textPrompt) ~= "function" then
-    alert("検索語を入力できませんでした。")
-    return nil
-  end
-  local ok, button, value = pcall(hs.dialog.textPrompt, "検索", "検索語を入力してください。", "", "OK")
-  if not ok then
-    alert("検索語を入力できませんでした。")
-    return nil
-  end
-  value = trimmed(value)
-  if button ~= "OK" or value == "" then
-    alert("検索をキャンセルしました。")
-    return nil
-  end
-  return value
-end
-
-function M.run(command)
-  local value, canPrompt = selectedText()
-  if not canPrompt then return false end
-  if not value then value = inputText() end
-  if not value then return false end
-
-  local prefix
-  if command == "google" then
-    prefix = GOOGLE_URL
-  elseif command == "dictionary" then
-    prefix = DICTIONARY_URL
-  else
-    alert("URLコマンドを実行できませんでした。")
-    return false
-  end
-
+local function open(command, value)
+  local prefix = command == "google" and GOOGLE_URL or DICTIONARY_URL
   if not hs.urlevent or type(hs.urlevent.openURL) ~= "function" then
     alert("URLを開けませんでした。")
     return false
@@ -93,6 +39,38 @@ function M.run(command)
     alert("URLを開けませんでした。")
     return false
   end
+  return true
+end
+
+local function prompt(command)
+  local result = textPrompt.request({
+    title = "検索",
+    message = "検索語を入力してください。",
+    submit = "OK",
+  })
+  if result.status == "submitted" then return open(command, result.text) end
+  if result.status == "error" then alert("検索語を入力できませんでした。")
+  else alert("検索をキャンセルしました。") end
+  return false
+end
+
+function M.run(command)
+  if command ~= "google" and command ~= "dictionary" then
+    alert("URLコマンドを実行できませんでした。")
+    return false
+  end
+
+  local started = textIO.capture("read", function(result)
+    if type(result) ~= "table" then alert("検索語を取得できませんでした。"); return end
+    if result.status == "selected" then
+      local value = trimmed(result.text)
+      if value ~= "" then open(command, value) else prompt(command) end
+      return
+    end
+    if result.status == "none" then prompt(command); return end
+    alert("検索語を取得できませんでした。")
+  end)
+  if started == false then return false end
   return true
 end
 
