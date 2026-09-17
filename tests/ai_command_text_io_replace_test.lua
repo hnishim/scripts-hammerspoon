@@ -4,6 +4,7 @@ local resultShows = {}
 local alerts = {}
 local captureCalls = {}
 local replaceCalls = {}
+local stopCalls = 0
 local bundleID = "com.example.Editor"
 local replacementOutcome = "verified_replaced"
 
@@ -16,9 +17,9 @@ local function isReplacementHelper(path)
 end
 
 local function newTask(path, callback, arguments)
-  local task = { path = path, callback = callback, arguments = arguments or {}, started = false }
+  local task = { path = path, callback = callback, arguments = arguments or {}, started = false, terminated = false }
   function task:start() self.started = true; return self end
-  function task:terminate() return self end
+  function task:terminate() self.terminated = true; return self end
   tasks[#tasks + 1] = task
   return task
 end
@@ -41,7 +42,7 @@ _G.hs = {
   json = {
     encode = function(payload) return "PROMPT:" .. payload.contents[1].parts[1].text end,
     decode = function()
-      return { candidates = { { content = { parts = { { text = "結果" } } } } } }
+      return { candidates = { { content = { parts = { { text = "結果" } } } } }
     end,
   },
   application = {
@@ -68,23 +69,26 @@ end
 package.preload["components.text_prompt"] = function()
   return { request = function() return { status = "cancelled" } end }
 end
-package.preload["components.text_io"] = function()
-  return {
-    capture = function(mode, callback)
-      captureCalls[#captureCalls + 1] = mode
-      callback({
-        status = "selected",
-        text = "入力",
-        replace = function(replacement, outcomeCallback)
-          replaceCalls[#replaceCalls + 1] = replacement
-          outcomeCallback({ outcome = replacementOutcome, reason = "fixture" })
-          return true
-        end,
-      })
-      return true
-    end,
-  }
-end
+local textIOStub = {
+  capture = function(mode, callback)
+    captureCalls[#captureCalls + 1] = mode
+    callback({
+      status = "selected",
+      text = "入力",
+      replace = function(replacement, outcomeCallback)
+        replaceCalls[#replaceCalls + 1] = replacement
+        outcomeCallback({ outcome = replacementOutcome, reason = "fixture" })
+        return true
+      end,
+    })
+    return true
+  end,
+  stop = function()
+    stopCalls = stopCalls + 1
+    return true
+  end,
+}
+package.preload["components.text_io"] = function() return textIOStub end
 package.preload["components.powerpoint_selection"] = function()
   return {
     capture = function() error("AI action must not call PowerPoint selection directly") end,
@@ -113,7 +117,7 @@ local function assertNoReplacementHelper(firstIndex)
   end
 end
 
-local function runReplaceCase(targetBundle, outcome, expectPanel)
+local function runReplaceCase(targetBundle, outcome, expectPanel, expectedAlerts)
   bundleID = targetBundle
   replacementOutcome = outcome
   local beforeTasks = #tasks
@@ -121,6 +125,7 @@ local function runReplaceCase(targetBundle, outcome, expectPanel)
   local beforeCaptures = #captureCalls
   local beforeReplacements = #replaceCalls
   local beforePanels = #resultShows
+  local beforeAlerts = #alerts
 
   assert(ai.run(promptPath, model, "replace") ~= false, "replace command starts")
   assertEqual(#captureCalls, beforeCaptures + 1, "replace performs one shared capture")
@@ -141,15 +146,34 @@ local function runReplaceCase(targetBundle, outcome, expectPanel)
   else
     assertEqual(#resultShows, beforePanels, "terminal replacement outcome does not duplicate result panel")
   end
+  assertEqual(#alerts, beforeAlerts + (expectedAlerts or 0), "replacement outcome alert count")
 end
 
 -- Generic editable applications enter the shared replace boundary; action code no longer owns the Swift helper session.
-runReplaceCase("com.example.Editor", "verified_replaced", false)
+runReplaceCase("com.example.Editor", "verified_replaced", false, 0)
 
 -- A safe refusal remains display-only without bypassing the common write-back boundary.
-runReplaceCase("com.example.Editor", "not_replaced", true)
+runReplaceCase("com.example.Editor", "not_replaced", true, 0)
+
+-- Dispatch with uncertain postcondition is terminal: no duplicate panel, no second mutation, no error alert.
+runReplaceCase("com.example.Editor", "replacement_dispatched_unverified", false, 0)
+
+-- Common write-back errors fail safely without exposing a duplicate result panel.
+runReplaceCase("com.example.Editor", "error", false, 1)
 
 -- PowerPoint uses the same action-level replace contract; backend selection is hidden inside text_io.
-runReplaceCase("com.microsoft.PowerPoint", "verified_replaced", false)
+runReplaceCase("com.microsoft.PowerPoint", "verified_replaced", false, 0)
+
+-- Explicit AI stop delegates replacement-session cancellation to the shared I/O owner.
+do
+  bundleID = "com.example.Editor"
+  replacementOutcome = "verified_replaced"
+  local beforeTasks = #tasks
+  local beforeStops = stopCalls
+  assert(ai.run(promptPath, model, "replace") ~= false, "replace command starts before explicit stop")
+  assert(tasks[beforeTasks + 1] and tasks[beforeTasks + 1].started, "credential task starts after capture")
+  ai.stop()
+  assertEqual(stopCalls, beforeStops + 1, "AI stop delegates once to shared text I/O")
+end
 
 print("ai_command_text_io_replace_test: ok")

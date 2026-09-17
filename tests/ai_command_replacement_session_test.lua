@@ -36,6 +36,26 @@ local function timerAfter(delay, callback)
   return timer
 end
 
+local function liveTimers()
+  local count = 0
+  for _, timer in ipairs(timers) do
+    if not timer.stopped then count = count + 1 end
+  end
+  return count
+end
+
+local function fireLatestTimer()
+  for index = #timers, 1, -1 do
+    local timer = timers[index]
+    if not timer.stopped then
+      timer.stopped = true
+      timer.callback()
+      return timer
+    end
+  end
+  error("missing live timer")
+end
+
 local function newTask(path, callback, streamOrArguments, maybeArguments)
   if helperTaskCreationFailure and isReplacementHelper(path) then return nil end
   local streamCallback, arguments
@@ -122,18 +142,29 @@ end
 local textIO = require("components.text_io")
 local io = textIO.new({ currentBundleID = function() return "com.example.Editor" end })
 
-local function startCapture(eligible)
+local function startPendingCapture()
   local beforeTasks = #tasks
   local result
-  assert(io.capture("replace", function(value) result = value end) ~= false, "normal replace capture starts")
+  local callbacks = 0
+  assert(io.capture("replace", function(value)
+    callbacks = callbacks + 1
+    result = value
+  end) ~= false, "normal replace capture starts")
   local helper = tasks[beforeTasks + 1]
   assertTrue(helper ~= nil and helper.started, "shared I/O starts replacement helper")
   assertTrue(isReplacementHelper(helper.path), "helper ownership is inside shared I/O")
   assertTrue(type(helper.streamCallback) == "function", "helper session keeps a streaming callback")
   assertNil(result, "selection is not published before helper capture")
+  return helper, function() return result, callbacks end
+end
+
+local function startCapture(eligible)
+  local helper, observe = startPendingCapture()
   streamTask(helper,
     '{"event":"capture","selection":"入力","replacement_eligible":' .. (eligible and "true" or "false") ..
       ',"reason":"' .. (eligible and "strong_identity" or "weak_identity") .. '"}\n', "")
+  local result, callbacks = observe()
+  assertEqual(callbacks, 1, "helper capture publishes one result")
   assertEqual(result.status, "selected", "helper capture maps to common selected state")
   assertEqual(result.text, "入力", "helper selection is preserved")
   assertTrue(type(result.replace) == "function", "replace mode publishes one safe write-back handle")
@@ -211,6 +242,50 @@ do
   assertEqual(result.status, "error", "malformed helper protocol maps to error")
   assertTrue(helper.terminated, "malformed helper protocol terminates helper")
   assertEqual(#helper.inputs, 0, "malformed helper protocol cannot mutate")
+end
+
+-- Capture timeout terminates the helper and a later stale event cannot revive the session.
+do
+  local helper, observe = startPendingCapture()
+  assertTrue(liveTimers() > 0, "replace capture arms a watchdog")
+  fireLatestTimer()
+  local result, callbacks = observe()
+  assertTrue(helper.terminated, "capture timeout terminates helper")
+  assertEqual(callbacks, 1, "capture timeout publishes one terminal result")
+  assertEqual(result.status, "error", "capture timeout maps to error")
+  assertNil(result.replace, "capture timeout exposes no write-back")
+  local beforeCallbacks = callbacks
+  streamTask(helper, '{"event":"capture","selection":"入力","replacement_eligible":true,"reason":"strong_identity"}\n', "")
+  local staleResult, afterCallbacks = observe()
+  assertEqual(afterCallbacks, beforeCallbacks, "stale capture after timeout is ignored")
+  assertEqual(staleResult.status, "error", "stale capture does not replace terminal error")
+  assertEqual(#helper.inputs, 0, "stale capture after timeout cannot mutate")
+end
+
+-- Explicit stop terminates the owned helper and ignores later helper events.
+do
+  local helper, observe = startPendingCapture()
+  local _, beforeCallbacks = observe()
+  assert(io.stop() ~= false, "common I/O stop is accepted")
+  assertTrue(helper.terminated, "common I/O stop terminates helper")
+  streamTask(helper, '{"event":"capture","selection":"入力","replacement_eligible":true,"reason":"strong_identity"}\n', "")
+  local result, afterCallbacks = observe()
+  assertEqual(afterCallbacks, beforeCallbacks, "stale capture after stop is ignored")
+  assertNil(result, "explicit stop does not publish a stale selection")
+  assertEqual(#helper.inputs, 0, "stale capture after stop cannot mutate")
+end
+
+-- Starting another capture terminates the still-pending previous helper before owning a new session.
+do
+  local firstHelper = startPendingCapture()
+  local beforeTasks = #tasks
+  local secondResult
+  assert(io.capture("replace", function(value) secondResult = value end) ~= false, "second capture starts")
+  assertTrue(firstHelper.terminated, "new capture terminates previous helper")
+  local secondHelper = tasks[beforeTasks + 1]
+  assertTrue(secondHelper ~= nil and secondHelper.started, "new capture owns a new helper")
+  assertNil(secondResult, "second capture still waits for its own helper event")
+  io.stop()
 end
 
 print("ai_command_replacement_session_test: ok")

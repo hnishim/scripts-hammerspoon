@@ -15,6 +15,7 @@ end
 
 local urlSource = readFile("actions/url_commands.lua")
 local aiSource = readFile("actions/ai_commands.lua")
+local engineMain = readFile("helpers/replacement-engine/Sources/ReplacementEngine/main.swift")
 readFile("components/text_io.lua")
 readFile("components/text_prompt.lua")
 
@@ -34,5 +35,9 @@ assertNotContains(aiSource, "hs.dialog.textPrompt", "AI command must not own pro
 -- PowerPoint and the generic replacement helper are implementation details of the common I/O boundary.
 assertNotContains(aiSource, 'require("components.powerpoint_selection")', "AI command must not own PowerPoint selection backend")
 assertNotContains(aiSource, "replacement-engine", "AI command must not own generic replacement helper path")
+
+-- The Swift executable keeps an explicit read entry wired to the production read runner.
+assertContains(engineMain, '"read"', "replacement helper exposes a read command entry")
+assertContains(engineMain, "ProductionSelectionReadRunner", "read command enters the production read runner")
 
 print("text_io_architecture_test: ok")
