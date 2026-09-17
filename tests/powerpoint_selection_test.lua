@@ -148,31 +148,92 @@ captureResult = { "unexpected" }
 local malformed = pp.capture()
 assertEqual(malformed, nil, "unexpected capture shape is rejected")
 
--- Safe string transport must preserve every content class without raw source injection.
+local function decodeAppleScriptStringExpression(expression)
+  if type(expression) ~= "string" then return nil end
+  local output = {}
+  local index = 1
+  local length = #expression
+
+  local function skipSpaces()
+    while index <= length and expression:sub(index, index):match("%s") do index = index + 1 end
+  end
+
+  local function consumeLiteral()
+    index = index + 1
+    local buffer = {}
+    while index <= length do
+      local ch = expression:sub(index, index)
+      if ch == '"' then
+        index = index + 1
+        return table.concat(buffer)
+      end
+      if ch == "\\" then
+        local nextCh = expression:sub(index + 1, index + 1)
+        if nextCh == '"' or nextCh == "\\" then
+          buffer[#buffer + 1] = nextCh
+          index = index + 2
+        else
+          buffer[#buffer + 1] = ch
+          index = index + 1
+        end
+      else
+        buffer[#buffer + 1] = ch
+        index = index + 1
+      end
+    end
+    return nil
+  end
+
+  while true do
+    skipSpaces()
+    if index > length then break end
+
+    local value
+    local ch = expression:sub(index, index)
+    if ch == '"' then
+      value = consumeLiteral()
+      if value == nil then return nil end
+    elseif expression:sub(index, index + 4) == "quote" then
+      value = '"'
+      index = index + 5
+    elseif expression:sub(index, index + 7) == "linefeed" then
+      value = "\n"
+      index = index + 8
+    elseif expression:sub(index, index + 5) == "return" then
+      value = "\r"
+      index = index + 6
+    else
+      local tail = expression:sub(index)
+      local characterID = tail:match("^character%s+id%s+(%d+)")
+      if characterID then
+        local codepoint = tonumber(characterID)
+        if not codepoint or not utf8 or not utf8.char then return nil end
+        value = utf8.char(codepoint)
+        local matched = tail:match("^character%s+id%s+%d+")
+        index = index + #matched
+      else
+        return nil
+      end
+    end
+    output[#output + 1] = value
+
+    skipSpaces()
+    if index > length then break end
+    if expression:sub(index, index) ~= "&" then return nil end
+    index = index + 1
+  end
+
+  return table.concat(output)
+end
+
+-- Safe string transport must preserve the complete input, in order, without raw source injection.
 local special = "quote \" slash \\ line1\nline2\r日本語😀"
 local encoded = pp.encodeAppleScriptString(special)
 assertTrue(type(encoded) == "string" and encoded ~= "", "encoded AppleScript expression is non-empty")
-assertTrue(encoded:find("quote ", 1, true) ~= nil, "ordinary text before quote is preserved")
-assertTrue(encoded:find(" slash ", 1, true) ~= nil, "ordinary text around backslash is preserved")
-assertTrue(encoded:find("line1", 1, true) ~= nil and encoded:find("line2", 1, true) ~= nil,
-  "ordinary text around line breaks is preserved")
-assertTrue(encoded:find("linefeed", 1, true) ~= nil, "LF is encoded as an AppleScript expression")
-assertTrue(encoded:find("return", 1, true) ~= nil, "CR is encoded as an AppleScript expression")
-assertTrue(encoded:find("日本語😀", 1, true) ~= nil, "Unicode content is preserved")
+assertEqual(decodeAppleScriptStringExpression(encoded), special,
+  "encoded AppleScript expression round-trips the complete replacement exactly")
 assertTrue(encoded:find("\n", 1, true) == nil, "encoded expression contains no raw LF")
-local escapedQuote = string.char(92, 34)
-local escapedBackslash = string.char(92, 92)
-assertTrue(
-  encoded:find(escapedQuote, 1, true) ~= nil
-    or encoded:find("& quote &", 1, true) ~= nil
-    or encoded:find("character id 34", 1, true) ~= nil,
-  "quote content has an explicit safe representation"
-)
-assertTrue(
-  encoded:find(escapedBackslash, 1, true) ~= nil
-    or encoded:find("character id 92", 1, true) ~= nil,
-  "backslash content has an explicit safe representation"
-)
+assertTrue(encoded:find(special, 1, true) == nil, "raw replacement is not embedded as one source literal")
 
 -- Successful write verifies the postcondition and never embeds the raw replacement in source.
 resetWriteState()
