@@ -66,7 +66,7 @@ return {
   -- ==============================
 
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "a", action = { type = "app", app = "Microsoft Teams" } },
-  { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "b", action = { type = "app", app = "Arc" } },
+  { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "b", action = { type = "app", app = "Zen" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "c", action = { type = "app", app = "Ferdium" } },
   -- d
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "e", action = { type = "app", app = "Cursor" } },
