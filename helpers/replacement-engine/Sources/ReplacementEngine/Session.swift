@@ -37,7 +37,7 @@ enum ReplacementDiagnostic {
 enum ProductionReplacementEngine {
     static func mayDispatch(_ revalidation: TargetRevalidationResult) -> Bool {
         revalidation.decision == .replacementEligible
-            && revalidation.identity != .none
+            && revalidation.identity == .exact
             && revalidation.fieldState == .stable
     }
 

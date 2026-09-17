@@ -1,6 +1,7 @@
 local M = {}
 local hud = require("components.hud")
 local resultPanel = require("components.result_panel")
+local powerPointSelection = require("components.powerpoint_selection")
 
 local keychainService = "my.gemini-api.hammerspoon"
 local keychainTimeout = 10
@@ -10,6 +11,7 @@ local activeTask
 local runCommand
 local runPrompt
 local handleReplacementResponse
+local handlePowerPointResponse
 
 local function trim(value)
   return (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -272,6 +274,10 @@ local function startGemini(state, command, prompt, apiKey)
       if not decodeOK then failRequest(); return end
       local responseOK, response = responseText(payload)
       if not responseOK or response == "" then failRequest(); return end
+      if state.powerPointSession then
+        handlePowerPointResponse(state, response)
+        return
+      end
       if state.replacementSession then
         handleReplacementResponse(state, response)
         return
@@ -512,6 +518,58 @@ handleReplacementResponse = function(state, response)
   if not inputOK or inputResult == false then release(state, true); return end
 end
 
+handlePowerPointResponse = function(state, response)
+  if not isActive(state) then return end
+  local callOK, outcome = pcall(powerPointSelection.writeSelection, state.powerPointSnapshot, response)
+  if not callOK then release(state, true); return end
+  if outcome == "verified_replaced" or outcome == "replacement_dispatched_unverified" then
+    release(state)
+    return
+  end
+  if outcome == "not_replaced" then
+    release(state)
+    showResult(response)
+    return
+  end
+  release(state, true)
+end
+
+local function startPowerPointSession(promptPath, model, modelFailover, target)
+  if activeTask then
+    if activeTask.replacementSession or activeTask.powerPointSession then M.stop()
+    else showMessage("別のAIコマンドを実行中です。"); return false end
+  end
+
+  local captureOK, snapshot, captureErr = pcall(powerPointSelection.capture)
+  if not captureOK or not snapshot then
+    return runPowerPointFallback(promptPath, model, target, modelFailover)
+  end
+  if type(snapshot.selectedText) ~= "string" or snapshot.selectedText == "" then
+    return runPowerPointFallback(promptPath, model, target, modelFailover)
+  end
+
+  local promptOK, template = readFile(promptPath)
+  if not promptOK then showSafeError(); return false end
+  local renderedOK, prompt = replacePromptPlaceholders(template, snapshot.selectedText)
+  if not renderedOK then showSafeError(); return false end
+  prompt = prompt:gsub("%s+$", "")
+
+  operationSequence = operationSequence + 1
+  local state = {
+    token = operationSequence,
+    done = false,
+    powerPointSession = true,
+    powerPointSnapshot = snapshot,
+    keyTask = nil,
+    helperTask = nil,
+    watchdog = nil,
+  }
+  activeTask = state
+  hud.show("Gemini処理中...")
+  startKeychain(state, { model = model, model_failover = modelFailover }, prompt)
+  return true
+end
+
 local function startReplacementSession(promptPath, model, modelFailover)
   if activeTask then
     if activeTask.replacementSession then M.stop() else showMessage("別のAIコマンドを実行中です。"); return false end
@@ -574,6 +632,12 @@ function M.run(promptPath, model, mode, modelFailover)
   end
 
   if mode == "replace" then
+    local target
+    local appOK, app = pcall(hs.application.frontmostApplication)
+    if appOK then target = app end
+    if isPowerPoint(target) then
+      return startPowerPointSession(promptPath, model, modelFailover, target)
+    end
     return startReplacementSession(promptPath, model, modelFailover)
   end
 
