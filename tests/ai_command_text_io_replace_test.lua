@@ -1,0 +1,155 @@
+local tasks = {}
+local httpRequests = {}
+local resultShows = {}
+local alerts = {}
+local captureCalls = {}
+local replaceCalls = {}
+local bundleID = "com.example.Editor"
+local replacementOutcome = "verified_replaced"
+
+local function assertEqual(actual, expected, message)
+  assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
+end
+
+local function isReplacementHelper(path)
+  return type(path) == "string" and path:match("replacement%-engine$") ~= nil
+end
+
+local function newTask(path, callback, arguments)
+  local task = { path = path, callback = callback, arguments = arguments or {}, started = false }
+  function task:start() self.started = true; return self end
+  function task:terminate() return self end
+  tasks[#tasks + 1] = task
+  return task
+end
+
+_G.hs = {
+  alert = { show = function(message) alerts[#alerts + 1] = message end },
+  timer = {
+    doAfter = function(_, callback)
+      local timer = { callback = callback, stopped = false }
+      function timer:stop() self.stopped = true end
+      return timer
+    end,
+  },
+  task = { new = newTask },
+  http = {
+    asyncPost = function(url, body, headers, callback)
+      httpRequests[#httpRequests + 1] = { url = url, body = body, headers = headers, callback = callback }
+    end,
+  },
+  json = {
+    encode = function(payload) return "PROMPT:" .. payload.contents[1].parts[1].text end,
+    decode = function()
+      return { candidates = { { content = { parts = { { text = "結果" } } } } } }
+    end,
+  },
+  application = {
+    frontmostApplication = function()
+      return {
+        isFrontmost = function() return true end,
+        bundleID = function() return bundleID end,
+      }
+    end,
+  },
+}
+
+package.path = "./?.lua;./?/init.lua;" .. package.path
+package.preload["components.hud"] = function()
+  return { show = function() return true end, close = function() return true end }
+end
+package.preload["components.result_panel"] = function()
+  return {
+    show = function(content) resultShows[#resultShows + 1] = content; return true end,
+    stop = function() return true end,
+    close = function() return true end,
+  }
+end
+package.preload["components.text_prompt"] = function()
+  return { request = function() return { status = "cancelled" } end }
+end
+package.preload["components.text_io"] = function()
+  return {
+    capture = function(mode, callback)
+      captureCalls[#captureCalls + 1] = mode
+      callback({
+        status = "selected",
+        text = "入力",
+        replace = function(replacement, outcomeCallback)
+          replaceCalls[#replaceCalls + 1] = replacement
+          outcomeCallback({ outcome = replacementOutcome, reason = "fixture" })
+          return true
+        end,
+      })
+      return true
+    end,
+  }
+end
+package.preload["components.powerpoint_selection"] = function()
+  return {
+    capture = function() error("AI action must not call PowerPoint selection directly") end,
+    writeSelection = function() error("AI action must not write PowerPoint selection directly") end,
+  }
+end
+
+local ai = require("actions.ai_commands")
+local promptPath = "./tests/fixtures/ai_prompt.md"
+local model = "test-model"
+
+local function completeCredentials(firstIndex)
+  local account = tasks[firstIndex]
+  assert(account and account.started, "account task is started")
+  assertEqual(account.path, "/usr/bin/id", "account lookup path")
+  account.callback(0, "test-account\n", "")
+  local security = tasks[firstIndex + 1]
+  assert(security and security.started, "security task is started")
+  assertEqual(security.path, "/usr/bin/security", "keychain path")
+  security.callback(0, "test-api-key\n", "")
+end
+
+local function assertNoReplacementHelper(firstIndex)
+  for index = firstIndex, #tasks do
+    assert(not isReplacementHelper(tasks[index].path), "AI action must not own replacement-engine after common I/O migration")
+  end
+end
+
+local function runReplaceCase(targetBundle, outcome, expectPanel)
+  bundleID = targetBundle
+  replacementOutcome = outcome
+  local beforeTasks = #tasks
+  local beforeRequests = #httpRequests
+  local beforeCaptures = #captureCalls
+  local beforeReplacements = #replaceCalls
+  local beforePanels = #resultShows
+
+  assert(ai.run(promptPath, model, "replace") ~= false, "replace command starts")
+  assertEqual(#captureCalls, beforeCaptures + 1, "replace performs one shared capture")
+  assertEqual(captureCalls[#captureCalls], "replace", "AI replace uses common replace mode")
+  assertNoReplacementHelper(beforeTasks + 1)
+
+  completeCredentials(beforeTasks + 1)
+  assertEqual(#httpRequests, beforeRequests + 1, "selected replacement starts Gemini")
+  local request = httpRequests[#httpRequests]
+  assertEqual(request.body, "PROMPT:AI prompt: 入力", "captured text reaches Gemini")
+  request.callback(200, "response", "")
+
+  assertEqual(#replaceCalls, beforeReplacements + 1, "Gemini result is sent through shared write-back handle")
+  assertEqual(replaceCalls[#replaceCalls], "結果", "shared write-back receives Gemini result")
+  if expectPanel then
+    assertEqual(#resultShows, beforePanels + 1, "safe no-mutation outcome shows computed result once")
+    assertEqual(resultShows[#resultShows], "結果", "fallback panel receives Gemini result")
+  else
+    assertEqual(#resultShows, beforePanels, "terminal replacement outcome does not duplicate result panel")
+  end
+end
+
+-- Generic editable applications enter the shared replace boundary; action code no longer owns the Swift helper session.
+runReplaceCase("com.example.Editor", "verified_replaced", false)
+
+-- A safe refusal remains display-only without bypassing the common write-back boundary.
+runReplaceCase("com.example.Editor", "not_replaced", true)
+
+-- PowerPoint uses the same action-level replace contract; backend selection is hidden inside text_io.
+runReplaceCase("com.microsoft.PowerPoint", "verified_replaced", false)
+
+print("ai_command_text_io_replace_test: ok")
