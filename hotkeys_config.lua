@@ -1,6 +1,6 @@
 local home = os.getenv("HOME") or ""
 local promptDir = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/prompts/ai-commands/"
-local raycastRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/raycast/"
+local commandsRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/commands/"
 
 -- 複雑なアクションの事前定義
 local actions = {
@@ -38,7 +38,7 @@ local actions = {
     action = {
       type = "utility",
       executablePath = "/usr/bin/osascript",
-      scriptPath = raycastRoot .. "two-panes-finder.applescript",
+      scriptPath = commandsRoot .. "two-panes-finder.applescript",
     },
   },
   {
@@ -46,7 +46,7 @@ local actions = {
     action = {
       type = "utility",
       executablePath = "/bin/bash",
-      scriptPath = raycastRoot .. "title-case-chicago.sh",
+      scriptPath = commandsRoot .. "title-case-chicago.sh",
     },
   },
 }
