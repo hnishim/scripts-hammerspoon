@@ -186,4 +186,29 @@ do
   assertEqual(stopCalls, beforeStops + 1, "AI stop delegates once to shared text I/O")
 end
 
+-- Stopping after Gemini dispatch invalidates the operation; a delayed success callback cannot write back or publish stale UI.
+do
+  bundleID = "com.example.Editor"
+  replacementOutcome = "verified_replaced"
+  local beforeTasks = #tasks
+  local beforeRequests = #httpRequests
+  local beforeReplacements = #replaceCalls
+  local beforePanels = #resultShows
+  local beforeAlerts = #alerts
+  local beforeStops = stopCalls
+
+  assert(ai.run(promptPath, model, "replace") ~= false, "replace command starts before delayed callback cancellation")
+  completeCredentials(beforeTasks + 1)
+  assertEqual(#httpRequests, beforeRequests + 1, "replace dispatches Gemini before cancellation")
+  local staleRequest = httpRequests[#httpRequests]
+
+  ai.stop()
+  assertEqual(stopCalls, beforeStops + 1, "AI stop cancels shared text I/O after Gemini dispatch")
+
+  staleRequest.callback(200, "response", "")
+  assertEqual(#replaceCalls, beforeReplacements, "stale Gemini callback cannot invoke shared write-back")
+  assertEqual(#resultShows, beforePanels, "stale Gemini callback cannot publish a result panel")
+  assertEqual(#alerts, beforeAlerts, "stale Gemini callback cannot publish an additional error")
+end
+
 print("ai_command_text_io_replace_test: ok")
