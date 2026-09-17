@@ -1,9 +1,5 @@
 local tasks = {}
-local timers = {}
-local httpRequests = {}
-local resultPanelShows = {}
-local alerts = {}
-local frontmostBundle = "com.microsoft.Powerpoint"
+local bundleID = "com.microsoft.PowerPoint"
 
 local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
@@ -30,24 +26,21 @@ local function newTask(path, callback, streamOrArguments, maybeArguments)
     callback = callback,
     streamCallback = streamCallback,
     arguments = arguments or {},
+    inputs = {},
     started = false,
     terminated = false,
-    inputs = {},
   }
   function task:start() self.started = true; return self end
   function task:terminate() self.terminated = true; return self end
   function task:setInput(value) self.inputs[#self.inputs + 1] = value; return self end
+  function task:closeInput() return self end
+  function task:setStreamingCallback(fn) self.streamCallback = fn; return self end
   tasks[#tasks + 1] = task
   return task
 end
 
-local function completeTask(task, exitCode, stdout, stderr)
-  assert(task and task.callback, "task callback is missing")
-  task.callback(exitCode or 0, stdout or "", stderr or "")
-end
-
 local frontmost = {}
-function frontmost:bundleID() return frontmostBundle end
+function frontmost:bundleID() return bundleID end
 function frontmost:isFrontmost() return true end
 function frontmost:activate() return true end
 
@@ -70,127 +63,70 @@ end
 
 _G.hs = {
   configdir = ".",
-  alert = { show = function(message) alerts[#alerts + 1] = message end },
-  timer = {
-    doAfter = function(delay, callback)
-      local timer = { delay = delay, callback = callback, stopped = false }
-      function timer:stop() self.stopped = true end
-      timers[#timers + 1] = timer
-      return timer
-    end,
-  },
+  application = { frontmostApplication = function() return frontmost end },
   task = { new = newTask },
-  http = {
-    asyncPost = function(url, body, headers, callback)
-      httpRequests[#httpRequests + 1] = { url = url, body = body, headers = headers, callback = callback }
+  timer = {
+    doAfter = function(_, callback)
+      local timer = { callback = callback, stopped = false }
+      function timer:stop() self.stopped = true end
+      return timer
     end,
   },
   json = {
     encode = function(_) return "ENCODED" end,
-    decode = function(value)
-      if value == "GEMINI" then
-        return { candidates = { { content = { parts = { { text = "結果" } } } } } }
-      end
-      return {}
-    end,
+    decode = function(_) return {} end,
   },
-  application = { frontmostApplication = function() return frontmost end },
-  uielement = {
-    focusedElement = function()
-      return { selectedText = function() return "generic-input" end }
-    end,
-  },
-  pasteboard = {
-    getContents = function() return "prior" end,
-    changeCount = function() return 1 end,
-    allContentTypes = function() return { { "public.utf8-plain-text" } } end,
-    readAllData = function() return { ["public.utf8-plain-text"] = "prior" } end,
-    writeAllData = function() return true end,
-    clearContents = function() return true end,
-  },
-  eventtap = { keyStroke = function() return true end },
-  dialog = { textPrompt = function() return "キャンセル", "" end },
 }
 
-package.path = "./?.lua;" .. package.path
-package.preload["components.hud"] = function()
-  return { show = function() return true end, close = function() return true end }
-end
-package.preload["components.result_panel"] = function()
-  return {
-    show = function(content) resultPanelShows[#resultPanelShows + 1] = content; return true end,
-    stop = function() return true end,
-    close = function() return true end,
-  }
-end
+package.path = "./?.lua;./?/init.lua;" .. package.path
 package.preload["components.powerpoint_selection"] = function() return powerpoint end
 
-local ai = require("actions.ai_commands")
-local promptPath = "./tests/fixtures/ai_prompt.md"
-local model = "test-model"
+local textIO = require("components.text_io")
+local io = textIO.new({ currentBundleID = function() return bundleID end })
 
-local function completeCredentials(firstTaskIndex)
-  local account = tasks[firstTaskIndex]
-  assert(account, "account task is missing")
-  assertEqual(account.path, "/usr/bin/id", "PowerPoint route starts account lookup without replacement helper")
-  completeTask(account, 0, "test-account\n", "")
-  local security = tasks[firstTaskIndex + 1]
-  assert(security, "security task is missing")
-  assertEqual(security.path, "/usr/bin/security", "PowerPoint route reads API key")
-  completeTask(security, 0, "test-api-key\n", "")
-end
-
-local function assertNoHelperSince(firstTaskIndex)
-  for index = firstTaskIndex, #tasks do
-    assertTrue(not isReplacementHelper(tasks[index].path), "PowerPoint replace route must not start generic replacement-engine")
+local function assertNoReplacementHelper(firstIndex)
+  for index = firstIndex, #tasks do
+    assertTrue(not isReplacementHelper(tasks[index].path), "PowerPoint backend must not start generic replacement-engine")
   end
 end
 
-local function runPowerPointCase(outcome)
+local function runPowerPointCase(id, outcome)
+  bundleID = id
   powerpoint.outcome = outcome
   local beforeTasks = #tasks
-  local beforeRequests = #httpRequests
   local beforeCaptures = powerpoint.captureCalls
   local beforeWrites = powerpoint.writeCalls
-  local beforePanels = #resultPanelShows
+  local result
 
-  local started = ai.run(promptPath, model, "replace")
-  assertTrue(started ~= false, "PowerPoint replace route starts")
-  assertEqual(powerpoint.captureCalls, beforeCaptures + 1, "PowerPoint route captures selection before Gemini")
-  assertNoHelperSince(beforeTasks + 1)
-  completeCredentials(beforeTasks + 1)
-  assertEqual(#httpRequests, beforeRequests + 1, "PowerPoint capture starts one Gemini request")
-  httpRequests[#httpRequests].callback(200, "GEMINI", "")
-  assertEqual(powerpoint.writeCalls, beforeWrites + 1, "Gemini result is returned to the captured PowerPoint selection")
-  assertEqual(powerpoint.lastSnapshot, powerpoint.snapshot, "same capture snapshot is revalidated for write")
-  assertEqual(powerpoint.lastReplacement, "結果", "Gemini response is the replacement payload")
+  assert(io.capture("replace", function(value) result = value end) ~= false, "PowerPoint replace capture starts")
+  assertEqual(powerpoint.captureCalls, beforeCaptures + 1, "shared I/O selects PowerPoint capture backend")
+  assertNoReplacementHelper(beforeTasks + 1)
+  assertEqual(result.status, "selected", "PowerPoint selection is exposed through common status")
+  assertEqual(result.text, "入力", "PowerPoint selection text is preserved")
+  assertTrue(type(result.replace) == "function", "PowerPoint replace exposes common write-back handle")
 
-  if outcome == "not_replaced" then
-    assertEqual(#resultPanelShows, beforePanels + 1, "safe pre-write refusal displays the computed result once")
-    assertEqual(resultPanelShows[#resultPanelShows], "結果", "fallback panel receives the computed result")
-  else
-    assertEqual(#resultPanelShows, beforePanels, "terminal PowerPoint mutation outcome never duplicates result panel")
-  end
+  local terminal
+  assert(result.replace("結果", function(value) terminal = value end) ~= false, "PowerPoint common write-back starts")
+  assertEqual(powerpoint.writeCalls, beforeWrites + 1, "common write-back delegates once")
+  assertEqual(powerpoint.lastSnapshot, powerpoint.snapshot, "write-back reuses the exact captured snapshot")
+  assertEqual(powerpoint.lastReplacement, "結果", "write-back receives replacement text")
+  assertEqual(terminal.outcome, outcome, "PowerPoint outcome keeps its existing meaning")
 end
 
--- Bug case: PowerPoint replace must bypass the generic Swift AX session.
-runPowerPointCase("verified_replaced")
+-- Both historical bundle-id spellings stay on the dedicated backend.
+runPowerPointCase("com.microsoft.PowerPoint", "verified_replaced")
+runPowerPointCase("com.microsoft.Powerpoint", "not_replaced")
+runPowerPointCase("com.microsoft.PowerPoint", "replacement_dispatched_unverified")
 
--- Safe pre-write refusal falls back exactly once because mutation did not happen.
-runPowerPointCase("not_replaced")
-
--- Dispatch with uncertain postcondition is terminal to prevent duplicate mutation/panel output.
-runPowerPointCase("replacement_dispatched_unverified")
-
--- Adjacent regression: non-PowerPoint replace still uses the existing Swift helper session.
-frontmostBundle = "com.example.Editor"
-local beforeTasks = #tasks
+-- Normal applications use the same public entry but select the Swift helper backend internally.
+bundleID = "com.example.Editor"
 local beforeCaptures = powerpoint.captureCalls
-local started = ai.run(promptPath, model, "replace")
-assertTrue(started ~= false, "generic replace route starts")
-assertEqual(powerpoint.captureCalls, beforeCaptures, "generic route does not call PowerPoint capture")
-assertTrue(tasks[beforeTasks + 1] ~= nil and isReplacementHelper(tasks[beforeTasks + 1].path),
-  "non-PowerPoint replace keeps the replacement-engine helper path")
-ai.stop()
+local beforeTasks = #tasks
+local result
+assert(io.capture("replace", function(value) result = value end) ~= false, "normal replace capture starts")
+assertEqual(powerpoint.captureCalls, beforeCaptures, "normal route does not call PowerPoint capture")
+assertTrue(tasks[beforeTasks + 1] ~= nil, "normal route creates a backend task")
+assertTrue(isReplacementHelper(tasks[beforeTasks + 1].path), "normal route owns replacement-engine behind shared I/O")
+assertEqual(result, nil, "normal route waits for helper capture before publishing a selection")
 
 print("ai_command_powerpoint_routing_test: ok")

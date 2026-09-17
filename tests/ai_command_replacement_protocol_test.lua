@@ -1,8 +1,4 @@
 local tasks = {}
-local timers = {}
-local httpRequests = {}
-local alerts = {}
-local resultPanelShows = {}
 
 local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
@@ -12,15 +8,8 @@ local function assertTrue(value, message)
   assert(value == true, message)
 end
 
-local function isReplacementHelperPath(path)
+local function isReplacementHelper(path)
   return type(path) == "string" and path:match("replacement%-engine$") ~= nil
-end
-
-local function timerAfter(delay, callback)
-  local timer = { delay = delay, callback = callback, stopped = false }
-  function timer:stop() self.stopped = true end
-  timers[#timers + 1] = timer
-  return timer
 end
 
 local function newTask(path, callback, streamOrArguments, maybeArguments)
@@ -31,7 +20,6 @@ local function newTask(path, callback, streamOrArguments, maybeArguments)
   else
     arguments = streamOrArguments
   end
-
   local task = {
     path = path,
     callback = callback,
@@ -45,130 +33,124 @@ local function newTask(path, callback, streamOrArguments, maybeArguments)
   function task:terminate() self.terminated = true; return self end
   function task:setInput(value) self.inputs[#self.inputs + 1] = value; return self end
   function task:closeInput() return self end
+  function task:setStreamingCallback(fn) self.streamCallback = fn; return self end
   tasks[#tasks + 1] = task
   return task
 end
 
-local function streamTask(task, stdout, stderr)
-  assert(task and task.streamCallback, "streaming callback is missing")
-  return task.streamCallback(task, stdout or "", stderr or "")
+local function decodeFixture(value)
+  if value:find("missing_eligibility", 1, true) then
+    return { event = "capture", type = "capture", selection = "入力", reason = "fixture" }
+  end
+  if value:find("string_eligibility", 1, true) then
+    return {
+      event = "capture", type = "capture", selection = "入力", replacement_eligible = "true", reason = "fixture",
+    }
+  end
+  if value:find("missing_selection", 1, true) then
+    return { event = "capture", type = "capture", replacement_eligible = true, reason = "fixture" }
+  end
+  if value:find("non_string_selection", 1, true) then
+    return { event = "capture", type = "capture", selection = 42, replacement_eligible = true, reason = "fixture" }
+  end
+  if value:find("unknown_event", 1, true) then
+    return { event = "unknown", type = "unknown", reason = "fixture" }
+  end
+  if value:find("outcome_before_capture", 1, true) then
+    return { event = "outcome", type = "outcome", outcome = "not_replaced", reason = "fixture" }
+  end
+  if value:find("valid_capture", 1, true) then
+    return {
+      event = "capture", type = "capture", selection = "入力", selected_text = "入力",
+      replacement_eligible = true, reason = "fixture",
+    }
+  end
+  return {}
 end
 
 local frontmost = {}
-function frontmost:isFrontmost() return true end
-function frontmost:activate() return true end
 function frontmost:bundleID() return "com.example.Editor" end
+function frontmost:isFrontmost() return true end
 
 _G.hs = {
-  alert = { show = function(message) alerts[#alerts + 1] = message end },
-  timer = { doAfter = timerAfter },
+  configdir = ".",
+  application = { frontmostApplication = function() return frontmost end },
   task = { new = newTask },
-  http = {
-    asyncPost = function(url, body, headers, callback)
-      httpRequests[#httpRequests + 1] = { url = url, body = body, headers = headers, callback = callback }
+  timer = {
+    doAfter = function(_, callback)
+      local timer = { callback = callback, stopped = false }
+      function timer:stop() self.stopped = true end
+      return timer
     end,
   },
   json = {
     encode = function(_) return "ENCODED" end,
-    decode = function(value)
-      if value:find('"fixture_case"%s*:%s*"missing_eligibility"') then
-        return {
-          event = "capture",
-          type = "capture",
-          selection = "入力",
-          selected_text = "入力",
-          reason = "missing_eligibility",
-        }
-      end
-      if value:find('"fixture_case"%s*:%s*"string_eligibility"') then
-        return {
-          event = "capture",
-          type = "capture",
-          selection = "入力",
-          selected_text = "入力",
-          replacement_eligible = "true",
-          reason = "invalid_eligibility_type",
-        }
-      end
-      return { candidates = { { content = { parts = { { text = "結果" } } } } } }
-    end,
+    decode = decodeFixture,
   },
-  uielement = {
-    focusedElement = function()
-      return {
-        selectedText = function() return "入力" end,
-        attributeValue = function(_, name)
-          if name == "AXRole" then return "AXTextField" end
-          if name == "AXEditable" then return true end
-          return nil
-        end,
-      }
-    end,
-  },
-  application = { frontmostApplication = function() return frontmost end },
-  pasteboard = {
-    getContents = function() return "prior clipboard" end,
-    changeCount = function() return 1 end,
-    allContentTypes = function() return { { "public.utf8-plain-text" } } end,
-    readAllData = function() return { ["public.utf8-plain-text"] = "prior clipboard" } end,
-    writeAllData = function() return true end,
-    setContents = function() return true end,
-    clearContents = function() return true end,
-  },
-  eventtap = { keyStroke = function() return true end },
-  dialog = { textPrompt = function() return "キャンセル", "" end },
 }
 
-package.path = "./?.lua;" .. package.path
-package.preload["components.hud"] = function()
+package.path = "./?.lua;./?/init.lua;" .. package.path
+package.preload["components.powerpoint_selection"] = function()
   return {
-    show = function() end,
-    close = function() end,
-  }
-end
-package.preload["components.result_panel"] = function()
-  return {
-    show = function(content) resultPanelShows[#resultPanelShows + 1] = content; return true end,
-    close = function() return true end,
-    stop = function() return true end,
+    capture = function() error("normal backend must not use PowerPoint") end,
+    writeSelection = function() error("normal backend must not use PowerPoint") end,
   }
 end
 
-local ai = require("actions.ai_commands")
-local promptPath = "./tests/fixtures/ai_prompt.md"
-local model = "test-model"
+local textIO = require("components.text_io")
+local io = textIO.new({ currentBundleID = function() return "com.example.Editor" end })
 
-local function startReplacementHelper()
+local function startSession()
   local beforeTasks = #tasks
-  local beforeRequests = #httpRequests
-  ai.run(promptPath, model, "replace")
+  local result
+  assert(io.capture("replace", function(value) result = value end) ~= false, "protocol fixture capture starts")
   local helper = tasks[beforeTasks + 1]
-  assert(helper, "replace mode must create a helper task")
-  assertTrue(helper.started, "replacement helper is started")
-  assertTrue(isReplacementHelperPath(helper.path), "replace mode starts replacement-engine first")
-  assertTrue(type(helper.streamCallback) == "function", "replacement helper uses a streaming callback")
-  assertEqual(#httpRequests, beforeRequests, "Gemini does not start before a valid capture")
-  return helper, beforeRequests
+  assertTrue(helper ~= nil and helper.started, "protocol fixture starts helper")
+  assertTrue(isReplacementHelper(helper.path), "protocol validation lives on shared I/O helper boundary")
+  return helper, function() return result end
 end
 
-local function assertInvalidCaptureFailsClosed(payload, label)
-  local beforePanels = #resultPanelShows
-  local helper, beforeRequests = startReplacementHelper()
-  streamTask(helper, payload .. "\n", "")
-  assertTrue(helper.terminated, label .. " terminates the helper")
-  assertEqual(#httpRequests, beforeRequests, label .. " does not start Gemini")
+local function assertInvalidCapture(payload, label)
+  local helper, result = startSession()
+  helper.streamCallback(helper, payload .. "\n", "")
+  local value = result()
+  assertEqual(value.status, "error", label .. " maps to common error")
+  assertTrue(helper.terminated, label .. " terminates helper")
   assertEqual(#helper.inputs, 0, label .. " cannot send replacement input")
-  assertEqual(#resultPanelShows, beforePanels, label .. " does not show a duplicate result panel")
+  assert(value.replace == nil, label .. " exposes no write-back handle")
 end
 
-assertInvalidCaptureFailsClosed(
+assertInvalidCapture(
   '{"event":"capture","selection":"入力","reason":"fixture","fixture_case":"missing_eligibility"}',
   "capture missing replacement_eligible"
 )
-
-assertInvalidCaptureFailsClosed(
-  '{"event":"capture","selection":"入力","replacement_eligible":"true","reason":"fixture","fixture_case":"string_eligibility"}',
+assertInvalidCapture(
+  '{"event":"capture","selection":"入力","replacement_eligible":"true","fixture_case":"string_eligibility"}',
   "capture with non-boolean replacement_eligible"
 )
+assertInvalidCapture(
+  '{"event":"capture","replacement_eligible":true,"fixture_case":"missing_selection"}',
+  "capture missing selection"
+)
+assertInvalidCapture(
+  '{"event":"capture","selection":42,"replacement_eligible":true,"fixture_case":"non_string_selection"}',
+  "capture with non-string selection"
+)
+assertInvalidCapture('{"event":"unknown","fixture_case":"unknown_event"}', "unknown helper event before capture")
+assertInvalidCapture(
+  '{"event":"outcome","outcome":"not_replaced","fixture_case":"outcome_before_capture"}',
+  "terminal outcome before capture"
+)
+
+-- Control: a valid capture is accepted and keeps the session available for a later safe write-back.
+do
+  local helper, result = startSession()
+  helper.streamCallback(helper, '{"event":"capture","selection":"入力","replacement_eligible":true,"fixture_case":"valid_capture"}\n', "")
+  local value = result()
+  assertEqual(value.status, "selected", "valid capture is accepted")
+  assertEqual(value.text, "入力", "valid capture preserves selection")
+  assertTrue(type(value.replace) == "function", "valid replace capture exposes write-back handle")
+  assertEqual(helper.terminated, false, "valid capture keeps helper session alive")
+end
 
 print("ai_command_replacement_protocol_test: ok")
