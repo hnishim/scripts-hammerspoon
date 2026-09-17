@@ -42,7 +42,17 @@ _G.hs = {
   json = {
     encode = function(payload) return "PROMPT:" .. payload.contents[1].parts[1].text end,
     decode = function()
-      return { candidates = { { content = { parts = { { text = "結果" } } } } }
+      return {
+        candidates = {
+          {
+            content = {
+              parts = {
+                { text = "結果" },
+              },
+            },
+          },
+        },
+      }
     end,
   },
   application = {
