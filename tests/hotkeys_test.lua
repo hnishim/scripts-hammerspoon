@@ -361,9 +361,20 @@ assertEventPasses("Safari", { "cmd", "shift" }, 8, "c", "non-target app event")
 assertEventPasses("Cursor", { "cmd", "shift" }, 9, "v", "non-target key event")
 
 -- Change only configuration data: modifier/key and action targets are all observed
--- through the dispatcher without changing production action code.
+-- through the dispatcher without changing production action code. Non-required
+-- action types are injected by the test instead of being required in the user's
+-- hotkeys_config.
 local originalBindings = {}
 for index, binding in ipairs(config) do originalBindings[index] = binding end
+local originalConfigCount = #originalBindings
+local configHighWaterMark = originalConfigCount
+
+local function restoreConfig()
+  for index = 1, configHighWaterMark do config[index] = nil end
+  for index, binding in ipairs(originalBindings) do config[index] = binding end
+  configHighWaterMark = originalConfigCount
+end
+
 local function configIndexFor(binding)
   local target = signature(binding.modifiers, binding.key)
   for index, candidate in ipairs(config) do
@@ -372,50 +383,73 @@ local function configIndexFor(binding)
   error("config binding not found: " .. target)
 end
 
-local function configIndexWhere(description, predicate)
-  for index, candidate in ipairs(config) do
-    if predicate(candidate) then return index end
+local function configHasSignature(modifiers, key)
+  local target = signature(modifiers, key)
+  for _, candidate in ipairs(config) do
+    if signature(candidate.modifiers, candidate.key) == target then return true end
   end
-  error("config binding not found for " .. description)
+  return false
+end
+
+local temporaryModifierSets = {
+  { "cmd", "ctrl", "alt", "shift" },
+  { "cmd", "ctrl", "alt" },
+  { "cmd", "ctrl", "shift" },
+  { "cmd", "alt", "shift" },
+  { "ctrl", "alt", "shift" },
+  { "cmd", "ctrl" },
+  { "cmd", "alt" },
+  { "ctrl", "alt" },
+}
+local temporaryKeys = {
+  "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+  "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+  "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
+  "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+}
+
+local function findUnusedSignature()
+  for _, modifiers in ipairs(temporaryModifierSets) do
+    for _, key in ipairs(temporaryKeys) do
+      if not configHasSignature(modifiers, key) then return copyArray(modifiers), key end
+    end
+  end
+  error("test could not find an unused hotkey signature")
+end
+
+local function appendTemporaryBinding(action)
+  local modifiers, key = findUnusedSignature()
+  local binding = { modifiers = modifiers, key = key, action = action }
+  local index = #config + 1
+  config[index] = binding
+  if index > configHighWaterMark then configHighWaterMark = index end
+  return index, binding
 end
 
 local aiIndex = configIndexFor(requiredBindings[1])
-local appIndex = configIndexWhere("app action", function(binding)
-  return binding.action and binding.action.type == "app"
-end)
-local windowIndex = configIndexWhere("window action", function(binding)
-  return binding.action and binding.action.type == "window"
-end)
 local urlIndex = configIndexFor(requiredBindings[3])
-local previousIndex = configIndexWhere("previous-display action", function(binding)
-  return binding.action and binding.action.type == "window" and binding.action.command == "previous-display"
-end)
-local utilityIndex = configIndexWhere("utility action", function(binding)
-  return binding.action and binding.action.type == "utility"
-end)
 local fileNameCopyIndex = configIndexFor(expectedFileNameCopy)
 
 local changedAI = copyBinding(config[aiIndex])
-changedAI.modifiers = { "cmd", "shift" }
-changedAI.key = "Q"
+changedAI.modifiers, changedAI.key = findUnusedSignature()
 changedAI.action.promptPath = promptDir .. "changed.md"
 changedAI.action.model = "changed-model"
 changedAI.action.model_failover = "changed-failover-model"
 changedAI.action.mode = "replace"
 config[aiIndex] = changedAI
-local changedApp = copyBinding(config[appIndex])
-changedApp.action.app = "Changed App"
-config[appIndex] = changedApp
-local changedWindow = copyBinding(config[windowIndex])
-changedWindow.action.command = "full"
-config[windowIndex] = changedWindow
+
+local _, changedApp = appendTemporaryBinding({
+  type = "app", app = "Changed App",
+})
+local _, changedWindow = appendTemporaryBinding({
+  type = "window", command = "full",
+})
 local changedURL = copyBinding(config[urlIndex])
 changedURL.action.command = "dictionary"
 config[urlIndex] = changedURL
-local changedUtility = copyBinding(config[utilityIndex])
-changedUtility.action.executablePath = "/bin/changed-tool"
-changedUtility.action.scriptPath = raycastRoot .. "changed-script.sh"
-config[utilityIndex] = changedUtility
+local _, changedUtility = appendTemporaryBinding({
+  type = "utility", executablePath = "/bin/changed-tool", scriptPath = raycastRoot .. "changed-script.sh",
+})
 
 local beforeChangedBindCalls = #bindCalls
 local changedStartOK, changedStartResult = pcall(hotkeys.start)
@@ -439,16 +473,17 @@ assertEqual(actionCalls[1].args[1], promptDir .. "changed.md", "changed AI promp
 assertEqual(actionCalls[1].args[2], "changed-model", "changed AI model")
 assertEqual(actionCalls[1].args[3], "replace", "changed AI mode")
 assertEqual(actionCalls[1].args[4], "changed-failover-model", "changed AI failover model")
-assertEqual(actionCalls[2].name, "app", "changed app action module")
-assertTableEqual(actionCalls[2].args, { "Changed App" }, "changed app argument")
-assertEqual(actionCalls[3].name, "window", "changed window action module")
-assertTableEqual(actionCalls[3].args, { "full" }, "changed window argument")
+assertEqual(actionCalls[2].name, "app", "injected app action module")
+assertTableEqual(actionCalls[2].args, { "Changed App" }, "injected app argument")
+assertEqual(actionCalls[3].name, "window", "injected window action module")
+assertTableEqual(actionCalls[3].args, { "full" }, "injected window argument")
 assertEqual(actionCalls[4].name, "url", "changed URL action module")
 assertTableEqual(actionCalls[4].args, { "dictionary" }, "changed URL argument")
-assertEqual(actionCalls[5].name, "utility", "changed Utility action module")
-assertTableEqual(actionCalls[5].args, { "/bin/changed-tool", raycastRoot .. "changed-script.sh" }, "changed Utility arguments")
-for index, binding in ipairs(originalBindings) do config[index] = binding end
+assertEqual(actionCalls[5].name, "utility", "injected Utility action module")
+assertTableEqual(actionCalls[5].args, { "/bin/changed-tool", raycastRoot .. "changed-script.sh" },
+  "injected Utility arguments")
 
+restoreConfig()
 local beforeRestoredBindCalls = #bindCalls
 local restoredStartOK, restoredStartResult = pcall(hotkeys.start)
 assertEqual(restoredStartOK, true, "restored configuration reloads without error")
@@ -457,13 +492,12 @@ assertEqual(#bindCalls, beforeRestoredBindCalls + regularCount, "restored config
 assertEqual(#eventTapCalls, 4, "restored configuration registers one event tap")
 assertRegisteredBindings(regularBindings, beforeRestoredBindCalls + 1)
 
--- Valid manual additions and removals must not require this test fixture to change.
-local addedBinding = {
-  modifiers = { "cmd", "ctrl", "alt", "shift" },
-  key = "y",
-  action = { type = "app", app = "Temporary Test App" },
-}
-config[#config + 1] = addedBinding
+-- A valid non-required binding is injected with a dynamically unused signature,
+-- then removed again. Neither step depends on an app/window/utility binding
+-- already existing in the user's configuration.
+local addedIndex, addedBinding = appendTemporaryBinding({
+  type = "app", app = "Temporary Test App",
+})
 local beforeAddedBindCalls = #bindCalls
 local addedStartOK, addedStartResult = pcall(hotkeys.start)
 assertEqual(addedStartOK, true, "valid manual hotkey addition reloads without error")
@@ -478,20 +512,19 @@ handles[signature(addedBinding.modifiers, addedBinding.key)].callback()
 assertEqual(#actionCalls, 1, "valid manual addition exposes its callback")
 assertEqual(actionCalls[1].name, "app", "valid manual addition dispatches through the configured action type")
 assertTableEqual(actionCalls[1].args, { "Temporary Test App" }, "valid manual addition dispatch arguments")
-config[#config] = nil
 
-local removedBinding = table.remove(config, appIndex)
+config[addedIndex] = nil
 local beforeRemovedBindCalls = #bindCalls
 local removedStartOK, removedStartResult = pcall(hotkeys.start)
 assertEqual(removedStartOK, true, "valid manual hotkey removal reloads without error")
 assertEqual(removedStartResult, true, "valid manual non-required hotkey removal is accepted")
 local removedRegularBindings = collectRegularBindings(config)
-assertEqual(#removedRegularBindings, regularCount - 1, "valid manual removal decreases only the dynamic regular count")
+assertEqual(#removedRegularBindings, regularCount, "valid manual removal restores the dynamic regular count")
 assertEqual(#bindCalls, beforeRemovedBindCalls + #removedRegularBindings,
   "valid manual removal registers the dynamically discovered set")
 assertRegisteredBindings(removedRegularBindings, beforeRemovedBindCalls + 1)
-table.insert(config, appIndex, removedBinding)
 
+restoreConfig()
 local beforeManualRestoreBindCalls = #bindCalls
 local manualRestoreOK, manualRestoreResult = pcall(hotkeys.start)
 assertEqual(manualRestoreOK, true, "configuration reloads after manual add/remove cases")
@@ -602,46 +635,83 @@ local invalidCases = {
   { "missing AI mode", function() local b = copyBinding(config[aiIndex]); b.action.mode = nil; config[aiIndex] = b end },
   { "non-string AI mode", function() local b = copyBinding(config[aiIndex]); b.action.mode = 1; config[aiIndex] = b end },
   { "invalid AI mode", function() local b = copyBinding(config[aiIndex]); b.action.mode = "append"; config[aiIndex] = b end },
-  { "missing app name", function() local b = copyBinding(config[appIndex]); b.action.app = nil; config[appIndex] = b end },
-  { "non-string app name", function() local b = copyBinding(config[appIndex]); b.action.app = 1; config[appIndex] = b end },
-  { "empty app name", function() local b = copyBinding(config[appIndex]); b.action.app = ""; config[appIndex] = b end },
-  { "missing Window command", function() local b = copyBinding(config[windowIndex]); b.action.command = nil; config[windowIndex] = b end },
-  { "non-string Window command", function() local b = copyBinding(config[windowIndex]); b.action.command = 1; config[windowIndex] = b end },
-  { "invalid Window command", function() local b = copyBinding(config[windowIndex]); b.action.command = "maximize"; config[windowIndex] = b end },
-  { "invalid previous-display command", function() local b = copyBinding(config[previousIndex]); b.action.command = "previous"; config[previousIndex] = b end },
+  { "missing app name", function()
+      local _, b = appendTemporaryBinding({ type = "app", app = "Test App" })
+      b.action.app = nil
+    end },
+  { "non-string app name", function()
+      local _, b = appendTemporaryBinding({ type = "app", app = "Test App" })
+      b.action.app = 1
+    end },
+  { "empty app name", function()
+      local _, b = appendTemporaryBinding({ type = "app", app = "Test App" })
+      b.action.app = ""
+    end },
+  { "missing Window command", function()
+      local _, b = appendTemporaryBinding({ type = "window", command = "center" })
+      b.action.command = nil
+    end },
+  { "non-string Window command", function()
+      local _, b = appendTemporaryBinding({ type = "window", command = "center" })
+      b.action.command = 1
+    end },
+  { "invalid Window command", function()
+      local _, b = appendTemporaryBinding({ type = "window", command = "center" })
+      b.action.command = "maximize"
+    end },
+  { "invalid previous-display command", function()
+      local _, b = appendTemporaryBinding({ type = "window", command = "previous-display" })
+      b.action.command = "previous"
+    end },
   { "missing URL command", function() local b = copyBinding(config[urlIndex]); b.action.command = nil; config[urlIndex] = b end },
   { "non-string URL command", function() local b = copyBinding(config[urlIndex]); b.action.command = 1; config[urlIndex] = b end },
   { "invalid URL command", function() local b = copyBinding(config[urlIndex]); b.action.command = "bing"; config[urlIndex] = b end },
-  { "missing Utility executablePath", function() local b = copyBinding(config[utilityIndex]); b.action.executablePath = nil; config[utilityIndex] = b end },
-  { "non-string Utility executablePath", function() local b = copyBinding(config[utilityIndex]); b.action.executablePath = 1; config[utilityIndex] = b end },
-  { "empty Utility executablePath", function() local b = copyBinding(config[utilityIndex]); b.action.executablePath = ""; config[utilityIndex] = b end },
-  { "missing Utility scriptPath", function() local b = copyBinding(config[utilityIndex]); b.action.scriptPath = nil; config[utilityIndex] = b end },
-  { "non-string Utility scriptPath", function() local b = copyBinding(config[utilityIndex]); b.action.scriptPath = 1; config[utilityIndex] = b end },
-  { "empty Utility scriptPath", function() local b = copyBinding(config[utilityIndex]); b.action.scriptPath = ""; config[utilityIndex] = b end },
+  { "missing Utility executablePath", function()
+      local _, b = appendTemporaryBinding({ type = "utility", executablePath = "/bin/test", scriptPath = "/tmp/test.sh" })
+      b.action.executablePath = nil
+    end },
+  { "non-string Utility executablePath", function()
+      local _, b = appendTemporaryBinding({ type = "utility", executablePath = "/bin/test", scriptPath = "/tmp/test.sh" })
+      b.action.executablePath = 1
+    end },
+  { "empty Utility executablePath", function()
+      local _, b = appendTemporaryBinding({ type = "utility", executablePath = "/bin/test", scriptPath = "/tmp/test.sh" })
+      b.action.executablePath = ""
+    end },
+  { "missing Utility scriptPath", function()
+      local _, b = appendTemporaryBinding({ type = "utility", executablePath = "/bin/test", scriptPath = "/tmp/test.sh" })
+      b.action.scriptPath = nil
+    end },
+  { "non-string Utility scriptPath", function()
+      local _, b = appendTemporaryBinding({ type = "utility", executablePath = "/bin/test", scriptPath = "/tmp/test.sh" })
+      b.action.scriptPath = 1
+    end },
+  { "empty Utility scriptPath", function()
+      local _, b = appendTemporaryBinding({ type = "utility", executablePath = "/bin/test", scriptPath = "/tmp/test.sh" })
+      b.action.scriptPath = ""
+    end },
   { "duplicate modifier and key", function()
-      local duplicate = copyBinding(config[appIndex])
+      local _, duplicate = appendTemporaryBinding({ type = "app", app = "Duplicate Test App" })
       duplicate.modifiers = copyArray(config[aiIndex].modifiers)
       duplicate.key = config[aiIndex].key
-      config[appIndex] = duplicate
     end },
 }
 
 for _, testCase in ipairs(invalidCases) do
-  for index, binding in ipairs(originalBindings) do config[index] = binding end
+  restoreConfig()
   assertInvalidConfiguration(testCase[1], testCase[2])
 end
-for index, binding in ipairs(originalBindings) do config[index] = binding end
+restoreConfig()
 
 -- One representative malformed file_name_copy binding is enough to cover the
 -- eventtap action's validation boundary; detailed field permutations belong to
 -- the generic binding validator's tests above.
-for index, binding in ipairs(originalBindings) do config[index] = binding end
 assertInvalidConfiguration("file_name_copy missing action", function()
   local binding = copyBinding(config[fileNameCopyIndex])
   binding.action = nil
   config[fileNameCopyIndex] = binding
 end)
-for index, binding in ipairs(originalBindings) do config[index] = binding end
+restoreConfig()
 
 local function assertInvalidWithoutNotificationAPI()
   local beforeBindCalls = #bindCalls
