@@ -146,7 +146,7 @@ package.preload["components.hud"] = function() return {} end
 
 local home = os.getenv("HOME") or ""
 local promptDir = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/prompts/ai-commands/"
-local raycastRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/raycast/"
+local commandsRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/commands/"
 local hammerspoonExternalScriptsRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/hammerspoon/external_scripts/"
 local expected = {
   { modifiers = { "cmd", "alt", "shift" }, key = "b",
@@ -196,11 +196,11 @@ expected[#expected + 1] = {
 }
 expected[#expected + 1] = {
   modifiers = { "cmd", "alt", "shift" }, key = "f",
-  action = { type = "utility", executablePath = "/usr/bin/osascript", scriptPath = raycastRoot .. "two-panes-finder.applescript" },
+  action = { type = "utility", executablePath = "/usr/bin/osascript", scriptPath = commandsRoot .. "two-panes-finder.applescript" },
 }
 expected[#expected + 1] = {
   modifiers = { "cmd", "alt", "shift" }, key = "c",
-  action = { type = "utility", executablePath = "/bin/bash", scriptPath = raycastRoot .. "title-case-chicago.sh" },
+  action = { type = "utility", executablePath = "/bin/bash", scriptPath = commandsRoot .. "title-case-chicago.sh" },
 }
 local expectedCount = #expected
 assertEqual(expectedCount, 28, "test expectation contains the current 28 bindings")
@@ -240,8 +240,8 @@ local function assertBindingEqual(actual, expectedBinding, index)
   for name, value in pairs(expectedBinding.action) do
     if name == "scriptPath" and expectedBinding.action.type == "utility"
         and actual.action[name] == hammerspoonExternalScriptsRoot .. value:match("([^/]+)$")
-        and value == raycastRoot .. value:match("([^/]+)$") then
-      print("[EXPECTED_FAIL] hotkeys_config Raycast script path (known legacy external_scripts path)")
+        and value == commandsRoot .. value:match("([^/]+)$") then
+      print("[EXPECTED_FAIL] hotkeys_config commands script path (known legacy external_scripts path)")
       os.exit(0)
     end
     assertEqual(actual.action[name], value, "config binding " .. index .. " action " .. name)
@@ -448,7 +448,7 @@ changedURL.action.command = "dictionary"
 config[urlIndex] = changedURL
 local changedUtility = copyBinding(config[utilityIndex])
 changedUtility.action.executablePath = "/bin/changed-tool"
-changedUtility.action.scriptPath = raycastRoot .. "changed-script.sh"
+changedUtility.action.scriptPath = commandsRoot .. "changed-script.sh"
 config[utilityIndex] = changedUtility
 
 local changedStartOK, changedStartResult = pcall(hotkeys.start)
@@ -484,7 +484,7 @@ assertTableEqual(actionCalls[3].args, { "full" }, "changed window argument")
 assertEqual(actionCalls[4].name, "url", "changed URL action module")
 assertTableEqual(actionCalls[4].args, { "dictionary" }, "changed URL argument")
 assertEqual(actionCalls[5].name, "utility", "changed Utility action module")
-assertTableEqual(actionCalls[5].args, { "/bin/changed-tool", raycastRoot .. "changed-script.sh" }, "changed Utility arguments")
+assertTableEqual(actionCalls[5].args, { "/bin/changed-tool", commandsRoot .. "changed-script.sh" }, "changed Utility arguments")
 for index, binding in ipairs(originalBindings) do config[index] = binding end
 
 local restoredStartOK, restoredStartResult = pcall(hotkeys.start)
