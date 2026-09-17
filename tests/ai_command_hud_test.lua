@@ -4,14 +4,10 @@ local tasks = {}
 local httpRequests = {}
 local resultShows = {}
 local hudEvents = {}
-local clipboard = "prior clipboard"
-local clipboardCount = 1
-local clipboardItems = { ["public.utf8-plain-text"] = "prior clipboard" }
-local clipboardTypes = { { "public.utf8-plain-text" } }
-local focusedSelection = "入力"
-local copyResult = "コピー入力"
-local copyFailure = false
-local frontmost = true
+local captureCalls = {}
+local promptCalls = {}
+local selectionResult = { status = "selected", text = "入力" }
+local promptResult = { status = "cancelled" }
 local taskSequence = 0
 
 local function assertEqual(actual, expected, message)
@@ -34,6 +30,10 @@ local function fireLatestTimer()
     end
   end
   error("missing live timer")
+end
+
+local function resetInputCalls()
+  captureCalls, promptCalls = {}, {}
 end
 
 _G.hs = {
@@ -69,68 +69,10 @@ _G.hs = {
       return { candidates = { { content = { parts = { { text = "結果" } } } } } }
     end,
   },
-  dialog = {
-    textPrompt = function() return "キャンセル", "" end,
-  },
-  uielement = {
-    focusedElement = function()
-      if focusedSelection == "missing" then return nil end
-      return {
-        selectedText = function()
-          if focusedSelection == "error" then error("selectedText failure") end
-          return focusedSelection
-        end,
-      }
-    end,
-  },
-  pasteboard = {
-    getContents = function() return clipboard end,
-    changeCount = function() return clipboardCount end,
-    allContentTypes = function()
-      local result = {}
-      for i, item in ipairs(clipboardTypes) do
-        result[i] = {}
-        for j, value in ipairs(item) do result[i][j] = value end
-      end
-      return result
-    end,
-    readAllData = function()
-      local result = {}
-      for key, value in pairs(clipboardItems) do result[key] = value end
-      return result
-    end,
-    writeAllData = function(data)
-      clipboardItems = {}
-      for key, value in pairs(data) do clipboardItems[key] = value end
-      clipboard = clipboardItems["public.utf8-plain-text"]
-      clipboardTypes = { { "public.utf8-plain-text" } }
-      clipboardCount = clipboardCount + 1
-      return true
-    end,
-    clearContents = function()
-      clipboard = nil
-      clipboardItems = {}
-      clipboardTypes = {}
-      clipboardCount = clipboardCount + 1
-      return true
-    end,
-  },
-  eventtap = {
-    keyStroke = function(modifiers, key)
-      assertEqual(table.concat(modifiers, "+"), "cmd", "display fallback uses Command")
-      assertEqual(key, "c", "display fallback uses Command-C")
-      if copyFailure then error("copy failure") end
-      clipboard = copyResult
-      clipboardItems = { ["public.utf8-plain-text"] = copyResult }
-      clipboardTypes = { { "public.utf8-plain-text" } }
-      clipboardCount = clipboardCount + 1
-      return true
-    end,
-  },
   application = {
     frontmostApplication = function()
       return {
-        isFrontmost = function() return frontmost end,
+        isFrontmost = function() return true end,
         bundleID = function() return "com.example.Editor" end,
       }
     end,
@@ -150,6 +92,23 @@ package.preload["components.result_panel"] = function()
     stop = function() return true end,
   }
 end
+package.preload["components.text_io"] = function()
+  return {
+    capture = function(mode, callback)
+      captureCalls[#captureCalls + 1] = mode
+      callback(selectionResult)
+      return true
+    end,
+  }
+end
+package.preload["components.text_prompt"] = function()
+  return {
+    request = function(options)
+      promptCalls[#promptCalls + 1] = options
+      return promptResult
+    end,
+  }
+end
 
 local ai = require("actions.ai_commands")
 local promptPath = "./tests/fixtures/ai_prompt.md"
@@ -158,18 +117,25 @@ local model = "test-model"
 local function completeCredentials(startIndex)
   local account = tasks[startIndex]
   assert(account and account.started, "account task is started")
+  assertEqual(account.path, "/usr/bin/id", "account lookup path")
   account.callback(0, "test-account\n", "")
   local security = tasks[startIndex + 1]
   assert(security and security.started, "security task is started")
+  assertEqual(security.path, "/usr/bin/security", "API key lookup path")
   security.callback(0, "test-api-key\n", "")
 end
 
--- Display mode keeps the pre-HIR-235 contract: direct selection -> Gemini -> result panel.
+-- Display mode acquires input through the shared read boundary.
 do
+  resetInputCalls()
+  selectionResult = { status = "selected", text = "入力" }
   local beforeTasks = #tasks
   local beforeRequests = #httpRequests
   local beforeShows = #resultShows
-  assertEqual(ai.run(promptPath, model, "display"), true, "display command starts")
+  assert(ai.run(promptPath, model, "display") ~= false, "display command starts")
+  assertEqual(#captureCalls, 1, "display performs one capture")
+  assertEqual(captureCalls[1], "read", "display uses read mode")
+  assertEqual(#promptCalls, 0, "selected display input does not prompt")
   completeCredentials(beforeTasks + 1)
   assertEqual(#httpRequests, beforeRequests + 1, "display starts one HTTP request")
   local request = httpRequests[#httpRequests]
@@ -180,12 +146,79 @@ do
   assertEqual(liveTimers(), 0, "display success leaves no watchdog")
 end
 
+-- No selection is the only read result that may enter manual input.
+do
+  resetInputCalls()
+  selectionResult = { status = "none" }
+  promptResult = { status = "submitted", text = "手入力" }
+  local beforeTasks = #tasks
+  local beforeRequests = #httpRequests
+  assert(ai.run(promptPath, model, "display") ~= false, "manual-input display starts")
+  assertEqual(#captureCalls, 1, "manual-input display performs one capture")
+  assertEqual(#promptCalls, 1, "no selection prompts exactly once")
+  completeCredentials(beforeTasks + 1)
+  assertEqual(#httpRequests, beforeRequests + 1, "manual input starts one HTTP request")
+  local request = httpRequests[#httpRequests]
+  assertEqual(request.body, "PROMPT:AI prompt: 手入力", "manual input is rendered")
+  request.callback(200, "response", "")
+end
+
+-- Cancel is quiet, while empty/API failure remains distinguishable to the action.
+do
+  resetInputCalls()
+  selectionResult = { status = "none" }
+  promptResult = { status = "cancelled" }
+  local beforeTasks = #tasks
+  local beforeAlerts = #alerts
+  ai.run(promptPath, model, "display")
+  assertEqual(#promptCalls, 1, "cancel prompts once")
+  assertEqual(#tasks, beforeTasks, "cancel starts no credentials task")
+  assertEqual(#alerts, beforeAlerts, "cancel does not alert")
+end
+
+do
+  resetInputCalls()
+  selectionResult = { status = "none" }
+  promptResult = { status = "empty" }
+  local beforeTasks = #tasks
+  local beforeAlerts = #alerts
+  ai.run(promptPath, model, "display")
+  assertEqual(#tasks, beforeTasks, "empty input starts no credentials task")
+  assertEqual(#alerts, beforeAlerts + 1, "empty input alerts once")
+end
+
+do
+  resetInputCalls()
+  selectionResult = { status = "none" }
+  promptResult = { status = "error" }
+  local beforeTasks = #tasks
+  local beforeAlerts = #alerts
+  ai.run(promptPath, model, "display")
+  assertEqual(#tasks, beforeTasks, "prompt API error starts no credentials task")
+  assertEqual(#alerts, beforeAlerts + 1, "prompt API error alerts once")
+end
+
+-- Acquisition unavailable/error never falls through to the prompt.
+for _, status in ipairs({ "unavailable", "error" }) do
+  resetInputCalls()
+  selectionResult = { status = status }
+  promptResult = { status = "submitted", text = "must not be used" }
+  local beforeTasks = #tasks
+  local beforeAlerts = #alerts
+  ai.run(promptPath, model, "display")
+  assertEqual(#promptCalls, 0, "acquisition failure never prompts: " .. status)
+  assertEqual(#tasks, beforeTasks, "acquisition failure starts no credentials task: " .. status)
+  assertEqual(#alerts, beforeAlerts + 1, "acquisition failure alerts once: " .. status)
+end
+
 -- Configured failover retries once with the same rendered payload.
 do
+  resetInputCalls()
+  selectionResult = { status = "selected", text = "入力" }
   local beforeTasks = #tasks
   local beforeRequests = #httpRequests
   local beforeShows = #resultShows
-  assertEqual(ai.run(promptPath, model, "display", "fallback-model"), true, "failover command starts")
+  assert(ai.run(promptPath, model, "display", "fallback-model") ~= false, "failover command starts")
   completeCredentials(beforeTasks + 1)
   local primary = httpRequests[beforeRequests + 1]
   primary.callback(503, "failure", "")
@@ -198,70 +231,28 @@ do
   assertEqual(liveTimers(), 0, "fallback success leaves no watchdog")
 end
 
--- HTTP timeout releases the operation and shows a single safe error.
+-- HTTP timeout still releases the operation and shows a single safe error.
 do
+  resetInputCalls()
+  selectionResult = { status = "selected", text = "入力" }
   local beforeTasks = #tasks
   local beforeAlerts = #alerts
-  assertEqual(ai.run(promptPath, model, "display"), true, "timeout scenario starts")
+  assert(ai.run(promptPath, model, "display") ~= false, "timeout scenario starts")
   completeCredentials(beforeTasks + 1)
   fireLatestTimer()
   assertEqual(#alerts, beforeAlerts + 1, "HTTP timeout shows one safe error")
   assertEqual(liveTimers(), 0, "HTTP timeout leaves no watchdog")
 end
 
--- Missing prompt fails before account/keychain work.
+-- Missing prompt file fails before account/keychain work after shared input acquisition.
 do
+  resetInputCalls()
+  selectionResult = { status = "selected", text = "入力" }
   local beforeTasks = #tasks
   local beforeAlerts = #alerts
   ai.run("./tests/fixtures/missing-ai-prompt.md", model, "display")
   assertEqual(#tasks, beforeTasks, "missing prompt starts no task")
   assertEqual(#alerts, beforeAlerts + 1, "missing prompt shows a safe error")
-end
-
--- When AX selected text is unavailable, display mode uses Command-C only for input,
--- restores the prior clipboard, and then continues through the normal Gemini path.
-do
-  focusedSelection = nil
-  clipboard = "rich prior"
-  clipboardCount = 10
-  clipboardItems = {
-    ["public.utf8-plain-text"] = "rich prior",
-    ["public.rtf"] = "{\\rtf1 rich prior}",
-  }
-  clipboardTypes = { { "public.utf8-plain-text", "public.rtf" } }
-  copyResult = "fallback input"
-  local beforeTasks = #tasks
-  local beforeRequests = #httpRequests
-  local beforeShows = #resultShows
-  assertEqual(ai.run(promptPath, model, "display"), true, "clipboard fallback starts")
-  fireLatestTimer()
-  assertEqual(clipboard, "rich prior", "clipboard fallback restores prior text")
-  assertEqual(clipboardItems["public.rtf"], "{\\rtf1 rich prior}", "clipboard fallback restores rich data")
-  completeCredentials(beforeTasks + 1)
-  assertEqual(#httpRequests, beforeRequests + 1, "clipboard fallback starts Gemini")
-  local request = httpRequests[#httpRequests]
-  assertEqual(request.body, "PROMPT:AI prompt: fallback input", "copied input is rendered")
-  request.callback(200, "response", "")
-  assertEqual(#resultShows, beforeShows + 1, "clipboard fallback shows one result")
-end
-
--- Copy failure is fail-closed and never starts Gemini.
-do
-  focusedSelection = nil
-  copyFailure = true
-  clipboard = "before failure"
-  clipboardCount = 20
-  clipboardItems = { ["public.utf8-plain-text"] = "before failure" }
-  clipboardTypes = { { "public.utf8-plain-text" } }
-  local beforeTasks = #tasks
-  local beforeRequests = #httpRequests
-  local beforeAlerts = #alerts
-  ai.run(promptPath, model, "display")
-  assertEqual(#tasks, beforeTasks, "copy failure starts no task")
-  assertEqual(#httpRequests, beforeRequests, "copy failure starts no HTTP request")
-  assertEqual(#alerts, beforeAlerts + 1, "copy failure shows one safe error")
-  assertEqual(clipboard, "before failure", "copy failure preserves clipboard")
-  copyFailure = false
 end
 
 print("ai_command_hud_test: ok")
