@@ -147,79 +147,26 @@ package.preload["components.hud"] = function() return {} end
 local home = os.getenv("HOME") or ""
 local promptDir = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/prompts/ai-commands/"
 local raycastRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/raycast/"
-local hammerspoonExternalScriptsRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/hammerspoon/external_scripts/"
-local expected = {
+local requiredBindings = {
   { modifiers = { "cmd", "alt", "shift" }, key = "b",
     action = { type = "ai", promptPath = promptDir .. "bio-ai_expert.md", model = "gemini-flash-latest", model_failover = "gemini-flash-lite-latest", mode = "display" } },
   { modifiers = { "cmd", "alt", "shift" }, key = "r",
     action = { type = "ai", promptPath = promptDir .. "review-text_compact.md", model = "gemini-flash-latest", model_failover = "gemini-flash-lite-latest", mode = "replace" } },
-  { modifiers = { "cmd", "alt", "shift" }, key = "t",
-    action = { type = "ai", promptPath = promptDir .. "translate.md", model = "gemini-flash-lite-latest", mode = "replace" } },
+  { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "g",
+    action = { type = "url", command = "google" } },
+  { modifiers = { "cmd", "alt", "shift" }, key = "j",
+    action = { type = "url", command = "dictionary" } },
 }
-
-local apps = {
-  { "a", "Microsoft Teams" }, { "b", "Arc" }, { "c", "Ferdium" },
-  { "e", "Cursor" }, { "f", "Finder" },
-  { "i", "ChatGPT" }, { "j", "Dictionaries" }, { "k", "Linear" },
-  { "m", "Meru" }, { "n", "Notion" }, { "p", "Microsoft PowerPoint" },
-  { "s", "Slack" }, { "w", "1Password" }, { "z", "zoom.us" },
-}
-for _, appBinding in ipairs(apps) do
-  expected[#expected + 1] = {
-    modifiers = { "cmd", "ctrl", "alt", "shift" }, key = appBinding[1],
-    action = { type = "app", app = appBinding[2] },
-  }
-end
-
-for _, binding in ipairs({
-  { "t", "bottom" }, { "c", "center" }, { "g", "left" },
-  { "r", "right" }, { "n", "top" }, { "f", "full" },
-}) do
-  expected[#expected + 1] = {
-    modifiers = { "cmd", "ctrl" }, key = binding[1],
-    action = { type = "window", command = binding[2] },
-  }
-end
-
-expected[#expected + 1] = {
-  modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "g",
-  action = { type = "url", command = "google" },
-}
-expected[#expected + 1] = {
-  modifiers = { "cmd", "alt", "shift" }, key = "j",
-  action = { type = "url", command = "dictionary" },
-}
-
-expected[#expected + 1] = {
-  modifiers = { "ctrl", "cmd" }, key = "p",
-  action = { type = "window", command = "previous-display" },
-}
-expected[#expected + 1] = {
-  modifiers = { "cmd", "alt", "shift" }, key = "f",
-  action = { type = "utility", executablePath = "/usr/bin/osascript", scriptPath = raycastRoot .. "two-panes-finder.applescript" },
-}
-expected[#expected + 1] = {
-  modifiers = { "cmd", "alt", "shift" }, key = "c",
-  action = { type = "utility", executablePath = "/bin/bash", scriptPath = raycastRoot .. "title-case-chicago.sh" },
-}
-local expectedCount = #expected
-assertEqual(expectedCount, 28, "test expectation contains the current 28 bindings")
 local expectedFileNameCopy = {
   modifiers = { "cmd", "shift" }, key = "c",
   action = { type = "file_name_copy" },
 }
-assertEqual(expected[1].action.model, "gemini-flash-latest", "normal AI primary model")
-assertEqual(expected[1].action.model_failover, "gemini-flash-lite-latest", "normal AI failover model")
-assertEqual(expected[2].action.model, "gemini-flash-latest", "replace AI primary model")
-assertEqual(expected[2].action.model_failover, "gemini-flash-lite-latest", "replace AI failover model")
-assertEqual(expected[3].action.model, "gemini-flash-lite-latest", "translate primary model")
-assertEqual(expected[3].action.model_failover, nil, "translate has no failover model")
 
-local expectedBySignature = {}
-for _, binding in ipairs(expected) do
+local requiredBySignature = {}
+for _, binding in ipairs(requiredBindings) do
   local key = signature(binding.modifiers, binding.key)
-  assert(expectedBySignature[key] == nil, "test expectation contains no duplicate modifier/key combinations")
-  expectedBySignature[key] = binding
+  assert(requiredBySignature[key] == nil, "required bindings contain no duplicate modifier/key combinations")
+  requiredBySignature[key] = binding
 end
 
 local function actionArguments(action)
@@ -230,24 +177,18 @@ local function actionArguments(action)
   error("unsupported test action type: " .. tostring(action.type))
 end
 
-local function assertBindingEqual(actual, expectedBinding, index)
-  assert(type(actual) == "table", "binding " .. index .. " must be a table")
+local function assertBindingEqual(actual, expectedBinding, label)
+  assert(type(actual) == "table", label .. " must be a table")
   assertEqual(signature(actual.modifiers, actual.key), signature(expectedBinding.modifiers, expectedBinding.key),
-    "config binding " .. index .. " modifier/key")
-  assertEqual(actual.key, expectedBinding.key, "config binding " .. index .. " key")
-  assert(type(actual.action) == "table", "config binding " .. index .. " action must be a table")
-  assertEqual(actual.action.type, expectedBinding.action.type, "config binding " .. index .. " action type")
+    label .. " modifier/key")
+  assertEqual(actual.key, expectedBinding.key, label .. " key")
+  assert(type(actual.action) == "table", label .. " action must be a table")
+  assertEqual(actual.action.type, expectedBinding.action.type, label .. " action type")
   for name, value in pairs(expectedBinding.action) do
-    if name == "scriptPath" and expectedBinding.action.type == "utility"
-        and actual.action[name] == hammerspoonExternalScriptsRoot .. value:match("([^/]+)$")
-        and value == raycastRoot .. value:match("([^/]+)$") then
-      print("[EXPECTED_FAIL] hotkeys_config Raycast script path (known legacy external_scripts path)")
-      os.exit(0)
-    end
-    assertEqual(actual.action[name], value, "config binding " .. index .. " action " .. name)
+    assertEqual(actual.action[name], value, label .. " action " .. name)
   end
   for name in pairs(actual.action) do
-    assert(expectedBinding.action[name] ~= nil, "config binding " .. index .. " has an unexpected action field " .. name)
+    assert(expectedBinding.action[name] ~= nil, label .. " has an unexpected action field " .. name)
   end
 end
 
@@ -303,32 +244,42 @@ local function assertCallbacks(bindings, message)
   end
 end
 
+local function collectRegularBindings(bindings)
+  local regular = {}
+  for _, binding in ipairs(bindings) do
+    if not (binding.action and binding.action.type == "file_name_copy") then
+      regular[#regular + 1] = binding
+    end
+  end
+  return regular
+end
+
 local config = require("hotkeys_config")
 assert(type(config) == "table", "hotkeys_config must return the bindings array")
-assertEqual(#config, expectedCount + 1, "hotkeys_config contains regular bindings plus the eventtap action")
-local configSignatures = {}
+assert(#config > 0, "hotkeys_config must not be empty")
+local configBySignature = {}
 local fileNameCopyConfig
 for index, binding in ipairs(config) do
   assert(type(binding) == "table", "config binding " .. index .. " must be a table")
   local key = signature(binding.modifiers, binding.key)
-  local expectedBinding = expectedBySignature[key]
+  assert(configBySignature[key] == nil, "config binding " .. index .. " duplicates " .. key)
+  configBySignature[key] = binding
   if binding.action and binding.action.type == "file_name_copy" then
     assert(fileNameCopyConfig == nil, "config contains only one file_name_copy action")
     fileNameCopyConfig = binding
-    expectedBinding = expectedFileNameCopy
   end
-  assert(expectedBinding, "config binding " .. index .. " is not in the approved fixture: " .. key)
-  assert(configSignatures[key] == nil, "config binding " .. index .. " duplicates " .. key)
-  configSignatures[key] = true
-  assertBindingEqual(binding, expectedBinding, index)
 end
-for key in pairs(expectedBySignature) do
-  assert(configSignatures[key], "approved config binding was not found: " .. key)
+for key, requiredBinding in pairs(requiredBySignature) do
+  local actual = configBySignature[key]
+  assert(actual, "required config binding was not found: " .. key)
+  assertBindingEqual(actual, requiredBinding, "required config binding " .. key)
 end
 assert(fileNameCopyConfig, "config contains the file_name_copy eventtap action")
-assertEqual(signature(fileNameCopyConfig.modifiers, fileNameCopyConfig.key), "cmd+shift:c",
-  "file_name_copy eventtap modifier/key")
-assertEqual(fileNameCopyConfig.action.type, expectedFileNameCopy.action.type, "file_name_copy action type")
+assertBindingEqual(fileNameCopyConfig, expectedFileNameCopy, "file_name_copy config binding")
+
+local regularBindings = collectRegularBindings(config)
+local regularCount = #regularBindings
+assert(regularCount > 0, "hotkeys_config contains at least one regular hotkey")
 
 local hotkeys = require("hotkeys")
 assert(type(hotkeys.start) == "function", "hotkeys.start() must be exported")
@@ -336,22 +287,22 @@ assert(type(hotkeys.getLastError) == "function", "hotkeys.getLastError() must be
 local firstStartOK, firstStartResult = pcall(hotkeys.start)
 assertEqual(firstStartOK, true, "first hotkeys start completes without error")
 assertEqual(firstStartResult, true, "first hotkeys start succeeds")
-assertEqual(#bindCalls, expectedCount, "first start registers 28 regular hotkeys")
-assertEqual(bindAttempts, expectedCount, "first start attempts the expected number of binds")
+assertEqual(#bindCalls, regularCount, "first start registers every configured regular hotkey")
+assertEqual(bindAttempts, regularCount, "first start attempts the expected number of binds")
 assertEqual(#eventTapCalls, 1, "first start registers one event tap")
 assertEqual(eventTapCalls[1].started, true, "first event tap starts")
 assertTableEqual(eventTapCalls[1].types, { hs.eventtap.event.types.keyDown }, "event tap listens only for keyDown")
 assertEqual(handles["cmd+shift:c"], nil, "file_name_copy is handled by eventtap, not hs.hotkey.bind")
-assertRegisteredBindings(expected, 1)
-assertCallbacks(expected, "initial registered bindings")
+assertRegisteredBindings(regularBindings, 1)
+assertCallbacks(regularBindings, "initial registered bindings")
 
 local firstHandles = {}
-for index = 1, expectedCount do firstHandles[index] = bindCalls[index] end
+for index = 1, regularCount do firstHandles[index] = bindCalls[index] end
 local reloadStartOK, reloadStartResult = pcall(hotkeys.start)
 assertEqual(reloadStartOK, true, "reload hotkeys completes without error")
 assertEqual(reloadStartResult, true, "reload hotkeys succeeds")
-assertEqual(#bindCalls, expectedCount * 2, "reload registers a fresh set of hotkeys")
-assertEqual(#deletedHandles, expectedCount, "reload deletes every previous hotkey handle")
+assertEqual(#bindCalls, regularCount * 2, "reload registers a fresh set of hotkeys")
+assertEqual(#deletedHandles, regularCount, "reload deletes every previous hotkey handle")
 assertEqual(#eventTapCalls, 2, "reload registers one fresh event tap")
 assertEqual(fileNameCopyStopCalls, 1, "reload stops the previous file_name_copy action")
 assertEqual(handles["cmd+shift:c"], nil, "reloaded file_name_copy remains eventtap-only")
@@ -361,8 +312,8 @@ assertEqual(eventTapCalls[2].started, true, "reload starts the fresh event tap")
 for index, handle in ipairs(firstHandles) do
   assertEqual(handle.deleted, true, string.format("first-start handle %d is deleted", index))
 end
-assertRegisteredBindings(expected, expectedCount + 1)
-assertCallbacks(expected, "reloaded registered bindings")
+assertRegisteredBindings(regularBindings, regularCount + 1)
+assertCallbacks(regularBindings, "reloaded registered bindings")
 
 local function event(modifiers, keyCode, character)
   local flags = {}
@@ -421,12 +372,27 @@ local function configIndexFor(binding)
   error("config binding not found: " .. target)
 end
 
-local aiIndex = configIndexFor(expected[1])
-local appIndex = configIndexFor(expected[4])
-local windowIndex = configIndexFor(expected[18])
-local urlIndex = configIndexFor(expected[24])
-local previousIndex = configIndexFor(expected[26])
-local utilityIndex = configIndexFor(expected[27])
+local function configIndexWhere(description, predicate)
+  for index, candidate in ipairs(config) do
+    if predicate(candidate) then return index end
+  end
+  error("config binding not found for " .. description)
+end
+
+local aiIndex = configIndexFor(requiredBindings[1])
+local appIndex = configIndexWhere("app action", function(binding)
+  return binding.action and binding.action.type == "app"
+end)
+local windowIndex = configIndexWhere("window action", function(binding)
+  return binding.action and binding.action.type == "window"
+end)
+local urlIndex = configIndexFor(requiredBindings[3])
+local previousIndex = configIndexWhere("previous-display action", function(binding)
+  return binding.action and binding.action.type == "window" and binding.action.command == "previous-display"
+end)
+local utilityIndex = configIndexWhere("utility action", function(binding)
+  return binding.action and binding.action.type == "utility"
+end)
 local fileNameCopyIndex = configIndexFor(expectedFileNameCopy)
 
 local changedAI = copyBinding(config[aiIndex])
@@ -451,19 +417,15 @@ changedUtility.action.executablePath = "/bin/changed-tool"
 changedUtility.action.scriptPath = raycastRoot .. "changed-script.sh"
 config[utilityIndex] = changedUtility
 
+local beforeChangedBindCalls = #bindCalls
 local changedStartOK, changedStartResult = pcall(hotkeys.start)
 assertEqual(changedStartOK, true, "configuration-only changes reload without error")
 assertEqual(changedStartResult, true, "configuration-only changes reload successfully")
-assertEqual(#bindCalls, expectedCount * 3, "configuration-only changes register 28 regular hotkeys")
+local changedRegularBindings = collectRegularBindings(config)
+assertEqual(#bindCalls, beforeChangedBindCalls + #changedRegularBindings,
+  "configuration-only changes register every configured regular hotkey")
 assertEqual(#eventTapCalls, 3, "configuration-only changes register one event tap")
-local changedExpected = {}
-for index, binding in ipairs(expected) do changedExpected[index] = binding end
-changedExpected[1] = changedAI
-changedExpected[4] = changedApp
-changedExpected[18] = changedWindow
-changedExpected[24] = changedURL
-changedExpected[27] = changedUtility
-assertRegisteredBindings(changedExpected, expectedCount * 2 + 1)
+assertRegisteredBindings(changedRegularBindings, beforeChangedBindCalls + 1)
 clearActionCalls()
 handles[signature(changedAI.modifiers, changedAI.key)].callback()
 handles[signature(changedApp.modifiers, changedApp.key)].callback()
@@ -487,12 +449,56 @@ assertEqual(actionCalls[5].name, "utility", "changed Utility action module")
 assertTableEqual(actionCalls[5].args, { "/bin/changed-tool", raycastRoot .. "changed-script.sh" }, "changed Utility arguments")
 for index, binding in ipairs(originalBindings) do config[index] = binding end
 
+local beforeRestoredBindCalls = #bindCalls
 local restoredStartOK, restoredStartResult = pcall(hotkeys.start)
 assertEqual(restoredStartOK, true, "restored configuration reloads without error")
 assertEqual(restoredStartResult, true, "restored configuration reloads successfully")
-assertEqual(#bindCalls, expectedCount * 4, "restored configuration registers a complete set")
+assertEqual(#bindCalls, beforeRestoredBindCalls + regularCount, "restored configuration registers a complete set")
 assertEqual(#eventTapCalls, 4, "restored configuration registers one event tap")
-assertRegisteredBindings(expected, expectedCount * 3 + 1)
+assertRegisteredBindings(regularBindings, beforeRestoredBindCalls + 1)
+
+-- Valid manual additions and removals must not require this test fixture to change.
+local addedBinding = {
+  modifiers = { "cmd", "ctrl", "alt", "shift" },
+  key = "y",
+  action = { type = "app", app = "Temporary Test App" },
+}
+config[#config + 1] = addedBinding
+local beforeAddedBindCalls = #bindCalls
+local addedStartOK, addedStartResult = pcall(hotkeys.start)
+assertEqual(addedStartOK, true, "valid manual hotkey addition reloads without error")
+assertEqual(addedStartResult, true, "valid manual hotkey addition is accepted")
+local addedRegularBindings = collectRegularBindings(config)
+assertEqual(#addedRegularBindings, regularCount + 1, "valid manual addition increases only the dynamic regular count")
+assertEqual(#bindCalls, beforeAddedBindCalls + #addedRegularBindings,
+  "valid manual addition registers the dynamically discovered set")
+assertRegisteredBindings(addedRegularBindings, beforeAddedBindCalls + 1)
+clearActionCalls()
+handles[signature(addedBinding.modifiers, addedBinding.key)].callback()
+assertEqual(#actionCalls, 1, "valid manual addition exposes its callback")
+assertEqual(actionCalls[1].name, "app", "valid manual addition dispatches through the configured action type")
+assertTableEqual(actionCalls[1].args, { "Temporary Test App" }, "valid manual addition dispatch arguments")
+config[#config] = nil
+
+local removedBinding = table.remove(config, appIndex)
+local beforeRemovedBindCalls = #bindCalls
+local removedStartOK, removedStartResult = pcall(hotkeys.start)
+assertEqual(removedStartOK, true, "valid manual hotkey removal reloads without error")
+assertEqual(removedStartResult, true, "valid manual non-required hotkey removal is accepted")
+local removedRegularBindings = collectRegularBindings(config)
+assertEqual(#removedRegularBindings, regularCount - 1, "valid manual removal decreases only the dynamic regular count")
+assertEqual(#bindCalls, beforeRemovedBindCalls + #removedRegularBindings,
+  "valid manual removal registers the dynamically discovered set")
+assertRegisteredBindings(removedRegularBindings, beforeRemovedBindCalls + 1)
+table.insert(config, appIndex, removedBinding)
+
+local beforeManualRestoreBindCalls = #bindCalls
+local manualRestoreOK, manualRestoreResult = pcall(hotkeys.start)
+assertEqual(manualRestoreOK, true, "configuration reloads after manual add/remove cases")
+assertEqual(manualRestoreResult, true, "configuration is restored after manual add/remove cases")
+assertEqual(#bindCalls, beforeManualRestoreBindCalls + regularCount,
+  "restored configuration registers the original dynamic set")
+assertRegisteredBindings(regularBindings, beforeManualRestoreBindCalls + 1)
 
 local function assertInjectedConfigurationRejected(name, injectedValue)
   local beforeBindCalls = #bindCalls
@@ -689,19 +695,27 @@ local function assertFailedRegistrationCleaned(tapStart, message)
   end
 end
 
+local beforeNewFailureBindCalls = #bindCalls
+local beforeNewFailureTapCalls = #eventTapCalls
 assertFailedRegistrationCleaned(false, "eventtap.new failure")
 local recoveredAfterNewFailureOK, recoveredAfterNewFailureResult = pcall(hotkeys.start)
 assertEqual(recoveredAfterNewFailureOK, true, "start recovers after eventtap.new failure")
 assertEqual(recoveredAfterNewFailureResult, true, "start succeeds after eventtap.new failure")
-assertEqual(#bindCalls, expectedCount * 6, "recovery after eventtap.new failure binds 28 regular hotkeys")
-assertEqual(#eventTapCalls, 5, "recovery after eventtap.new failure registers one event tap")
+assertEqual(#bindCalls, beforeNewFailureBindCalls + regularCount * 2,
+  "eventtap.new failure and recovery each bind the dynamic regular set")
+assertEqual(#eventTapCalls, beforeNewFailureTapCalls + 1,
+  "recovery after eventtap.new failure registers one event tap")
 
+local beforeStartFailureBindCalls = #bindCalls
+local beforeStartFailureTapCalls = #eventTapCalls
 assertFailedRegistrationCleaned(true, "eventtap start failure")
 local recoveredAfterStartFailureOK, recoveredAfterStartFailureResult = pcall(hotkeys.start)
 assertEqual(recoveredAfterStartFailureOK, true, "start recovers after eventtap start failure")
 assertEqual(recoveredAfterStartFailureResult, true, "start succeeds after eventtap start failure")
-assertEqual(#bindCalls, expectedCount * 8, "recovery after eventtap start failure binds 28 regular hotkeys")
-assertEqual(#eventTapCalls, 7, "recovery after eventtap start failure registers one event tap")
+assertEqual(#bindCalls, beforeStartFailureBindCalls + regularCount * 2,
+  "eventtap start failure and recovery each bind the dynamic regular set")
+assertEqual(#eventTapCalls, beforeStartFailureTapCalls + 2,
+  "eventtap start failure creates one failed tap and recovery creates one fresh tap")
 
 -- A valid configuration may bind partially, but every newly returned handle is
 -- cleaned up and no partial handle remains active after a bind failure.
@@ -729,15 +743,15 @@ local afterFailureCount = #bindCalls
 local recoveryStartOK, recoveryStartResult = pcall(hotkeys.start)
 assertEqual(recoveryStartOK, true, "start completes after injected failure is removed")
 assertEqual(recoveryStartResult, true, "start recovers after injected failure")
-assertEqual(#bindCalls, afterFailureCount + expectedCount, "recovery registers a complete fresh set after the post-failure history")
+assertEqual(#bindCalls, afterFailureCount + regularCount, "recovery registers a complete fresh set after the post-failure history")
 local recoveryFirstIndex = afterFailureCount + 1
-assertRegisteredBindings(expected, recoveryFirstIndex)
+assertRegisteredBindings(regularBindings, recoveryFirstIndex)
 for index = recoveryFirstIndex, #bindCalls do
   local handle = bindCalls[index]
   assertEqual(handle.deleted, false, "recovery handle remains active")
   assertEqual(handles[handle.key], handle, "recovery handle is active in registry")
 end
-assertEqual(countEntries(handles), expectedCount, "recovery restores the complete active registry")
+assertEqual(countEntries(handles), regularCount, "recovery restores the complete active registry")
 
 -- Loading main with action modules that fail makes an accidental multi-entrypoint
 -- startup observable without inspecting source text.
