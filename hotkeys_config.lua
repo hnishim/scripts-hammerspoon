@@ -36,9 +36,7 @@ local actions = {
   {
     name = "two-panes-finder",
     action = {
-      type = "utility",
-      executablePath = "/usr/bin/osascript",
-      scriptPath = commandsRoot .. "two-panes-finder.applescript",
+      type = "two_panes_finder",
     },
   },
   {
