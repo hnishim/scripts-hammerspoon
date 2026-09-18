@@ -431,7 +431,7 @@ local function appendTemporaryBinding(action)
 end
 
 local aiIndex = configIndexFor(requiredBindings[1])
-local urlIndex = configIndexFor(requiredBindings[3])
+local urlIndex = configIndexFor(requiredBindings[4])
 local fileNameCopyIndex = configIndexFor(expectedFileNameCopy)
 
 local changedAI = copyBinding(config[aiIndex])
