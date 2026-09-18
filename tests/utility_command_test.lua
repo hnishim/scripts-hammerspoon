@@ -156,7 +156,11 @@ local function configureScreens(count)
 end
 
 local function frameFromWindow(isInitialLookup)
-  if isInitialLookup then initialWindowFrameCalls = initialWindowFrameCalls + 1 else readbackCalls = readbackCalls + 1 end
+  if isInitialLookup then
+    initialWindowFrameCalls = initialWindowFrameCalls + 1
+  else
+    readbackCalls = readbackCalls + 1
+  end
   if isInitialLookup and initialWindowFrameFailure then
     local failure = initialWindowFrameFailure
     initialWindowFrameFailure = nil
@@ -200,7 +204,11 @@ end
 _G.hs = {
   alert = {
     show = function(message, duration)
-      alerts[#alerts + 1] = { message = message, duration = duration, kind = message == successMessage and "success" or "failure" }
+      alerts[#alerts + 1] = {
+        message = message,
+        duration = duration,
+        kind = message == successMessage and "success" or "failure",
+      }
     end,
   },
   timer = {
@@ -216,7 +224,7 @@ _G.hs = {
     stop = function(timer) timer:stop() end,
   },
   window = {
-    frontmostWindow = function()
+      frontmostWindow = function()
       if utilityProbe then
         utilityFrontmostCalls = utilityFrontmostCalls + 1
         if utilityFrontmostMode == "error" then error("utility window lookup failure") end
@@ -239,7 +247,7 @@ _G.hs = {
       if frontmostMode == "error" then error("window lookup failure") end
       if frontmostMode == "nil" then return nil end
       local screen = currentScreen()
-      return {
+        return {
         screen = function()
           if screenMethodFailure == "error" then error("window screen failure") end
           if screenMethodFailure == "nil" then return nil end
@@ -270,14 +278,22 @@ _G.hs = {
             currentFrame.y = correction.y or currentFrame.y
           else
             currentFrame = frameCopy(frame)
-            if correctionWasApplied then finalReadbackActive = true; correctionWasApplied = false end
+            if correctionWasApplied then
+              finalReadbackActive = true
+              correctionWasApplied = false
+            end
           end
           setFrames[#setFrames + 1] = frameCopy(frame)
           layoutEvents[#layoutEvents + 1] = { kind = "setFrame", role = eventRole, frame = frameCopy(frame) }
         end,
         moveToScreen = function(_, target, noResize, ensureInScreenBounds, duration)
           assert(not moveScreenFailure, "moveToScreen failure")
-          moveCalls[#moveCalls + 1] = { target = target, noResize = noResize, ensureInScreenBounds = ensureInScreenBounds, duration = duration }
+          moveCalls[#moveCalls + 1] = {
+            target = target,
+            noResize = noResize,
+            ensureInScreenBounds = ensureInScreenBounds,
+            duration = duration,
+          }
           screenIndex = target.index
           screenFrame = frameCopy(screenSpecs[screenIndex].frame)
           if ensureInScreenBounds then
@@ -307,8 +323,12 @@ _G.hs = {
       local id = taskSequence
       local task = {
         start = function()
-          if taskMode.start == "error" then error("task start failure") end
-          if taskMode.start == "false" then return false end
+          if taskMode.start == "error" then
+            error("task start failure")
+          end
+          if taskMode.start == "false" then
+            return false
+          end
           return true
         end,
         callback = callback,
@@ -351,6 +371,7 @@ end
 
 local function expectedFrame(widthPercent, heightPercent, anchor)
   local screen = screenFrame
+  -- Requested frames use nearest-integer rounding for dimensions and edges.
   local function round(value) return math.floor(value + 0.5) end
   local w, h = round(screen.w * widthPercent), round(screen.h * heightPercent)
   local left, top = round(screen.x), round(screen.y)
@@ -358,7 +379,8 @@ local function expectedFrame(widthPercent, heightPercent, anchor)
   local x, y = left, top
   if anchor == "bl" then y = bottom - h
   elseif anchor == "cc" then x = round((left + right - w) / 2); y = round((top + bottom - h) / 2)
-  elseif anchor == "tr" then x = right - w end
+  elseif anchor == "tr" then x = right - w
+  end
   return { x = x, y = y, w = w, h = h }
 end
 
@@ -412,10 +434,15 @@ local function assertContainedBy(frame, screen, message)
 end
 
 local function assertStableCorrectionObservation(expectedObserved, message)
-  local initialSetIndex, correctiveSetIndex
+  local initialSetIndex
+  local correctiveSetIndex
   for index, event in ipairs(layoutEvents) do
-    if event.kind == "setFrame" and event.role == "initial" then initialSetIndex = index
-    elseif event.kind == "setFrame" and event.role == "corrective" then correctiveSetIndex = index; break end
+    if event.kind == "setFrame" and event.role == "initial" then
+      initialSetIndex = index
+    elseif event.kind == "setFrame" and event.role == "corrective" then
+      correctiveSetIndex = index
+      break
+    end
   end
   assert(initialSetIndex, message .. " has initial setFrame event")
   assert(correctiveSetIndex, message .. " has corrective setFrame event")
@@ -471,8 +498,16 @@ local function assertFailureAlert(priorAlerts, message)
   assert(alert.message ~= successMessage, message .. " used success message")
 end
 
-local function assertNoActionResidue(message) assertEqual(activeTimerCount(), 0, message .. " timer count") end
-local function entryCount(tableValue) local count = 0; for _ in pairs(tableValue) do count = count + 1 end; return count end
+local function assertNoActionResidue(message)
+  assertEqual(activeTimerCount(), 0, message .. " timer count")
+end
+
+local function entryCount(tableValue)
+  local count = 0
+  for _ in pairs(tableValue) do count = count + 1 end
+  return count
+end
+
 local function assertNoTaskResidue(callbackCount, referenceCount, message)
   collectgarbage("collect")
   assertEqual(entryCount(taskCallbacks), callbackCount, message .. " callback cleanup")
@@ -518,6 +553,7 @@ local function assertWindowFailure(failureName, setFailure, failureValue)
   assertEqual(activeTimerCount(), 0, failureName .. " leaves no timer")
 end
 
+-- Public layout mapping, exact requested geometry, direction cycles, maximize reset, and dynamic frames.
 assertVerticalLayout("t", { x = 180, y = 260, w = 640, h = 420 }, 0.5, "bottom")
 assertVerticalLayout("t", { x = 180, y = 260, w = 640, h = 450 }, 2 / 3, "bottom")
 assertVerticalLayout("t", { x = 180, y = 260, w = 640, h = 600 }, 0.5, "bottom")
@@ -548,28 +584,41 @@ screenFrame = { x = 10.25, y = 20.75, w = 1001.5, h = 777.25 }
 assertLayout("r", 0.5, 1, "tr")
 assertExactFrame(setFrames[#setFrames], expectedFrame(0.5, 1, "tr"), "non-integer screen rounded target")
 
+-- A window may apply a stable minimum-size correction after the requested
+-- frame is set. The correction is accepted only after repeated observations,
+-- then the requested anchor is recalculated and the corrected frame is set.
 screenFrame = { x = 0, y = 30, w = 1440, h = 870 }
 currentFrame = { x = 300, y = 100, w = 700, h = 500 }
 windowManagement.run("full")
 assertCorrectedLayout("n", { x = 300, y = 100, w = 700, h = 500 }, { h = 600 },
-  { x = 300, y = 30, w = 700, h = 600 }, { x = 300, y = 30, w = 700, h = 600 }, "stable top minimum-height correction")
+  { x = 300, y = 30, w = 700, h = 600 }, { x = 300, y = 30, w = 700, h = 600 },
+  "stable top minimum-height correction")
 windowManagement.run("full")
 assertCorrectedLayout("t", { x = 300, y = 100, w = 700, h = 500 }, { h = 600 },
-  { x = 300, y = 465, w = 700, h = 600 }, { x = 300, y = 300, w = 700, h = 600 }, "stable bottom minimum-height correction")
+  { x = 300, y = 465, w = 700, h = 600 }, { x = 300, y = 300, w = 700, h = 600 },
+  "stable bottom minimum-height correction")
+
 windowManagement.run("full")
 assertCorrectedLayout("g", { x = 300, y = 100, w = 700, h = 500 }, { w = 900 },
-  { x = 0, y = 30, w = 900, h = 870 }, { x = 0, y = 30, w = 900, h = 870 }, "stable left minimum-width correction")
+  { x = 0, y = 30, w = 900, h = 870 }, { x = 0, y = 30, w = 900, h = 870 },
+  "stable left minimum-width correction")
 windowManagement.run("full")
 assertCorrectedLayout("c", { x = 300, y = 100, w = 700, h = 500 }, { w = 900 },
-  { x = 360, y = 30, w = 900, h = 870 }, { x = 270, y = 30, w = 900, h = 870 }, "stable center minimum-width correction")
+  { x = 360, y = 30, w = 900, h = 870 }, { x = 270, y = 30, w = 900, h = 870 },
+  "stable center minimum-width correction")
 windowManagement.run("full")
 assertCorrectedLayout("r", { x = 300, y = 100, w = 700, h = 500 }, { w = 900 },
-  { x = 720, y = 30, w = 900, h = 870 }, { x = 540, y = 30, w = 900, h = 870 }, "stable right minimum-width correction")
+  { x = 720, y = 30, w = 900, h = 870 }, { x = 540, y = 30, w = 900, h = 870 },
+  "stable right minimum-width correction")
+
 windowManagement.run("full")
 assertCorrectedLayout("r", { x = 300, y = 100, w = 700, h = 500 }, { w = 1000 },
-  { x = 720, y = 30, w = 1000, h = 870 }, { x = 440, y = 30, w = 1000, h = 870 }, "out-of-bounds right correction is re-anchored")
+  { x = 720, y = 30, w = 1000, h = 870 }, { x = 440, y = 30, w = 1000, h = 870 },
+  "out-of-bounds right correction is re-anchored")
 assertContainedBy(currentFrame, screenFrame, "out-of-bounds right correction final frame is contained")
 
+-- A stable correction that cannot fit on the screen remains an explicit
+-- failure, while changing observations are not mistaken for a stable clamp.
 windowManagement.run("full")
 currentFrame = { x = 300, y = 100, w = 700, h = 500 }
 configureMinimumCorrection({ h = 1000 })
@@ -596,7 +645,11 @@ local function assertInitialCorrectionFailure(message, configureFailure)
 end
 
 assertInitialCorrectionFailure("unstable minimum-size correction", function()
-  setReadback({ { x = 300, y = 30, w = 700, h = 600 }, { x = 300, y = 31, w = 700, h = 600 }, { x = 300, y = 32, w = 700, h = 600 } })
+  setReadback({
+    { x = 300, y = 30, w = 700, h = 600 },
+    { x = 300, y = 31, w = 700, h = 600 },
+    { x = 300, y = 32, w = 700, h = 600 },
+  })
 end)
 
 local function assertCorrectiveSetFrameFailure()
@@ -634,7 +687,9 @@ local function assertFinalReadbackBoundarySuccess()
   windowManagement.run("full")
   currentFrame = { x = 300, y = 100, w = 700, h = 500 }
   configureMinimumCorrection({ h = 600 })
-  configureFinalReadback(nil, { { x = 302, y = 28, w = 698, h = 602 } })
+  configureFinalReadback(nil, {
+    { x = 302, y = 28, w = 698, h = 602 },
+  })
   local priorAlerts, priorFrames = #alerts, #setFrames
   press({ "cmd", "ctrl" }, "n")
   while activeTimerCount() > 0 do fireTimer(latestTimer) end
@@ -647,9 +702,18 @@ end
 assertFinalReadbackBoundarySuccess()
 assertFinalReadbackFailure("nil", nil, "final readback nil")
 assertFinalReadbackFailure("error", nil, "final readback exception")
-assertFinalReadbackFailure(nil, { { x = 300, y = 31, w = 700, h = 600 }, { x = 300, y = 32, w = 700, h = 600 }, { x = 300, y = 33, w = 700, h = 600 } }, "final readback instability")
-assertFinalReadbackFailure(nil, { { x = 303, y = 30, w = 700, h = 600 }, { x = 303, y = 30, w = 700, h = 600 }, { x = 303, y = 30, w = 700, h = 600 } }, "final readback beyond tolerance")
+assertFinalReadbackFailure(nil, {
+  { x = 300, y = 31, w = 700, h = 600 },
+  { x = 300, y = 32, w = 700, h = 600 },
+  { x = 300, y = 33, w = 700, h = 600 },
+}, "final readback instability")
+assertFinalReadbackFailure(nil, {
+  { x = 303, y = 30, w = 700, h = 600 },
+  { x = 303, y = 30, w = 700, h = 600 },
+  { x = 303, y = 30, w = 700, h = 600 },
+}, "final readback beyond tolerance")
 
+-- Readback tolerance is independent from exact setFrame target equality.
 setReadback(nil)
 assertNoAlert(function() press({ "cmd", "ctrl" }, "t") end, "immediate readback success")
 assertEqual(readbackCalls, 1, "immediate readback attempt count")
@@ -663,9 +727,16 @@ fireTimer(laterTimer)
 assertEqual(readbackCalls, 2, "later readback second attempt count")
 assertEqual(#alerts, laterReadbackAlerts, "later readback success has no alert")
 assertEqual(activeTimerCount(), 0, "later readback leaves no timer")
-for _, field in ipairs({ "x", "y", "w", "h" }) do assertReadbackTolerance(field, 2); assertReadbackTolerance(field, -2) end
-for _, field in ipairs({ "x", "y", "w", "h" }) do assertReadbackThreePixelFailure(field, 3); assertReadbackThreePixelFailure(field, -3) end
+for _, field in ipairs({ "x", "y", "w", "h" }) do
+  assertReadbackTolerance(field, 2)
+  assertReadbackTolerance(field, -2)
+end
+for _, field in ipairs({ "x", "y", "w", "h" }) do
+  assertReadbackThreePixelFailure(field, 3)
+  assertReadbackThreePixelFailure(field, -3)
+end
 
+-- Window, screen, setFrame, and readback failure paths are deterministic.
 assertWindowFailure("frontmostWindow nil", function(value) frontmostMode = value end, "nil")
 assertWindowFailure("frontmostWindow error", function(value) frontmostMode = value end, "error")
 assertWindowFailure("window:screen nil", function(value) screenMethodFailure = value end, "nil")
@@ -673,7 +744,6 @@ assertWindowFailure("window:screen exception", function(value) screenMethodFailu
 assertWindowFailure("screen:frame nil", function(value) screenFrameFailure = value end, "nil")
 assertWindowFailure("screen:frame exception", function(value) screenFrameFailure = value end, "error")
 assertWindowFailure("window:setFrame exception", function(value) setFrameFailure = value end, "error")
-
 local function assertInitialWindowFrameFailure(value, failureName)
   currentFrame = { x = -900, y = 350, w = 2600, h = 500 }
   initialWindowFrameFailure, initialWindowFrameValue = nil, nil
@@ -689,7 +759,6 @@ assertInitialWindowFrameFailure("nil", "window:frame nil before setFrame")
 assertInitialWindowFrameFailure("error", "window:frame exception before setFrame")
 assertInitialWindowFrameFailure({ x = -900, y = 350, w = 2600 }, "window:frame missing field before setFrame")
 assertInitialWindowFrameFailure({ x = -900, y = 350, w = "invalid", h = 500 }, "window:frame invalid field before setFrame")
-
 local function assertReadbackFailure(failureValue, failureName)
   setReadback(nil)
   readbackFailure = failureValue
@@ -704,6 +773,9 @@ end
 assertReadbackFailure("nil", "window:frame nil")
 assertReadbackFailure("error", "window:frame exception")
 
+-- Display movement uses Previous in a two-screen cycle and remains valid for
+-- larger configurations. The mock clamps the resulting frame to verify the
+-- ensureInScreenBounds contract without relying on a real Hammerspoon window.
 local function assertContained(frame, screen, message)
   assert(frame.x >= screen.x and frame.y >= screen.y, message .. " origin")
   assert(frame.x + frame.w <= screen.x + screen.w, message .. " right edge")
@@ -725,9 +797,12 @@ assertEqual(moveCalls[#moveCalls].target.id, "A", "two-screen B previous target"
 assertContained(currentFrame, screenSpecs[1].frame, "B to A frame is contained")
 
 configureScreens(3)
-press({ "cmd", "ctrl" }, "p"); assertEqual(moveCalls[#moveCalls].target.id, "C", "three-screen A previous target")
-press({ "cmd", "ctrl" }, "p"); assertEqual(moveCalls[#moveCalls].target.id, "B", "three-screen C previous target")
-press({ "cmd", "ctrl" }, "p"); assertEqual(moveCalls[#moveCalls].target.id, "A", "three-screen B previous target")
+press({ "cmd", "ctrl" }, "p")
+assertEqual(moveCalls[#moveCalls].target.id, "C", "three-screen A previous target")
+press({ "cmd", "ctrl" }, "p")
+assertEqual(moveCalls[#moveCalls].target.id, "B", "three-screen C previous target")
+press({ "cmd", "ctrl" }, "p")
+assertEqual(moveCalls[#moveCalls].target.id, "A", "three-screen B previous target")
 
 configureScreens(1)
 local priorOneScreenMoves, priorOneScreenAlerts = #moveCalls, #alerts
@@ -747,6 +822,7 @@ assertFailureAlert(priorMoveFailureAlerts, "moveToScreen failure notification")
 press({ "cmd", "ctrl" }, "p")
 assertEqual(#moveCalls, priorMoveFailureMoves + 1, "movement continues after move failure")
 
+-- Moving displays cancels a pending layout readback and invalidates its stale callback.
 setReadbackOffset("x", 3)
 press({ "cmd", "ctrl" }, "t")
 local staleMoveTimer = latestTimer
@@ -757,6 +833,7 @@ assertEqual(activeTimerCount(), 0, "display movement leaves no pending readback"
 staleMoveTimer.callback()
 assertEqual(#alerts, priorMoveStaleAlerts, "stale display-movement callback cannot alert")
 
+-- New resize and stop cancel pending timers; stale callbacks cannot report.
 setReadbackOffset("x", 3)
 press({ "cmd", "ctrl" }, "t")
 local staleResizeTimer = latestTimer
@@ -780,17 +857,29 @@ assertNoActionResidue("stop cleanup")
 staleStopTimer.callback()
 assertEqual(#alerts, priorStopAlerts, "stale stop callback cannot alert")
 
-assertNoAlert(function() assertEqual(windowManagement.run("bottom") ~= false, true, "bottom action name is accepted") end, "bottom action name")
-assertNoAlert(function() assertEqual(windowManagement.run("center") ~= false, true, "center action name is accepted") end, "center action name")
-assertNoAlert(function() assertEqual(windowManagement.run("left") ~= false, true, "left action name is accepted") end, "left action name")
-assertNoAlert(function() assertEqual(windowManagement.run("full") ~= false, true, "full action name is accepted") end, "full action name")
-assertNoAlert(function() assertEqual(windowManagement.run("right") ~= false, true, "right action name is accepted") end, "right action name")
-assertNoAlert(function() assertEqual(windowManagement.run("top") ~= false, true, "top action name is accepted") end, "top action name")
+-- Named actions are checked after geometry/cycle assertions so the probes do not
+-- alter the state used by the physical-key-equivalent checks above.
+assertNoAlert(function() assertEqual(windowManagement.run("bottom") ~= false, true, "bottom action name is accepted") end,
+  "bottom action name")
+assertNoAlert(function() assertEqual(windowManagement.run("center") ~= false, true, "center action name is accepted") end,
+  "center action name")
+assertNoAlert(function() assertEqual(windowManagement.run("left") ~= false, true, "left action name is accepted") end,
+  "left action name")
+assertNoAlert(function() assertEqual(windowManagement.run("full") ~= false, true, "full action name is accepted") end,
+  "full action name")
+assertNoAlert(function() assertEqual(windowManagement.run("right") ~= false, true, "right action name is accepted") end,
+  "right action name")
+assertNoAlert(function() assertEqual(windowManagement.run("top") ~= false, true, "top action name is accepted") end,
+  "top action name")
 assertEqual(windowManagement.run("invalid"), false, "invalid window action is rejected")
 windowManagement.stop()
+
+-- Registration lifecycle is owned by hotkeys_test.lua; this test covers only
+-- action behavior and task cleanup.
 utilityCommand.stop()
 assertNoActionResidue("action cleanup")
 
+-- Finder and Title Case task callbacks retain completion/failure handling and do not leak output.
 local function assertTaskCompletion(label, executablePath, scriptPath, exitCode, expectedArguments)
   local id = taskSequence + 1
   local priorAlerts = #alerts
@@ -825,9 +914,11 @@ assertEqual(utilityFrontmostCalls, frontmostCallsBeforeTitleCase,
 
 local nonMatchingTaskId = taskSequence + 1
 local frontmostCallsBeforeNonMatch = utilityFrontmostCalls
-assertEqual(utilityCommand.run(finderExecutable, nonMatchingScriptPath), true, "non-matching script path starts task")
+assertEqual(utilityCommand.run(finderExecutable, nonMatchingScriptPath), true,
+  "non-matching script path starts task")
 assertTask(nonMatchingTaskId, finderExecutable, { nonMatchingScriptPath })
-assertEqual(utilityFrontmostCalls, frontmostCallsBeforeNonMatch, "non-matching script suffix does not inspect frontmost window")
+assertEqual(utilityFrontmostCalls, frontmostCallsBeforeNonMatch,
+  "non-matching script suffix does not inspect frontmost window")
 complete(nonMatchingTaskId, 0, "", "")
 collectgarbage("collect")
 
@@ -858,7 +949,6 @@ assertFinderFallback("frontmost y NaN", nil, "nan-y")
 assertFinderFallback("frontmost w infinite", nil, "infinite-w")
 assertFinderFallback("frontmost h NaN", nil, "nan-h")
 utilityProbe = false
-
 local beforeMissingScript = taskSequence
 local beforeMissingAlerts = #alerts
 local missingScriptResult = utilityCommand.run(titleCaseExecutable, raycastRoot .. "/missing-title-case-chicago.sh")
@@ -875,10 +965,18 @@ local function assertInvalidCommand(label, executablePath, scriptPath)
   utilityCommand.run(executablePath, scriptPath)
   assertEqual(taskNewCalls, beforeTasks, label .. " does not create a task")
 end
-for _, testCase in ipairs({ { label = "nil executable", value = nil }, { label = "empty executable", value = "" }, { label = "non-string executable", value = 42 } }) do
+for _, testCase in ipairs({
+  { label = "nil executable", value = nil },
+  { label = "empty executable", value = "" },
+  { label = "non-string executable", value = 42 },
+}) do
   assertInvalidCommand(testCase.label, testCase.value, titleCaseScript)
 end
-for _, testCase in ipairs({ { label = "nil script", value = nil }, { label = "empty script", value = "" }, { label = "non-string script", value = 42 } }) do
+for _, testCase in ipairs({
+  { label = "nil script", value = nil },
+  { label = "empty script", value = "" },
+  { label = "non-string script", value = 42 },
+}) do
   assertInvalidCommand(testCase.label, titleCaseExecutable, testCase.value)
 end
 
