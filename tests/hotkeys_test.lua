@@ -146,7 +146,7 @@ package.preload["components.hud"] = function() return {} end
 
 local home = os.getenv("HOME") or ""
 local promptDir = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/prompts/ai-commands/"
-local raycastRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/raycast/"
+local commandsRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/commands/"
 local requiredBindings = {
   { modifiers = { "cmd", "alt", "shift" }, key = "b",
     action = { type = "ai", promptPath = promptDir .. "bio-ai_expert.md", model = "gemini-flash-latest", model_failover = "gemini-flash-lite-latest", mode = "display" } },
@@ -448,7 +448,7 @@ local changedURL = copyBinding(config[urlIndex])
 changedURL.action.command = "dictionary"
 config[urlIndex] = changedURL
 local _, changedUtility = appendTemporaryBinding({
-  type = "utility", executablePath = "/bin/changed-tool", scriptPath = raycastRoot .. "changed-script.sh",
+  type = "utility", executablePath = "/bin/changed-tool", scriptPath = commandsRoot .. "changed-script.sh",
 })
 
 local beforeChangedBindCalls = #bindCalls
@@ -480,7 +480,7 @@ assertTableEqual(actionCalls[3].args, { "full" }, "injected window argument")
 assertEqual(actionCalls[4].name, "url", "changed URL action module")
 assertTableEqual(actionCalls[4].args, { "dictionary" }, "changed URL argument")
 assertEqual(actionCalls[5].name, "utility", "injected Utility action module")
-assertTableEqual(actionCalls[5].args, { "/bin/changed-tool", raycastRoot .. "changed-script.sh" },
+assertTableEqual(actionCalls[5].args, { "/bin/changed-tool", commandsRoot .. "changed-script.sh" },
   "injected Utility arguments")
 
 restoreConfig()
