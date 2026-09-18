@@ -139,6 +139,7 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 package.preload["actions.ai_commands"] = function() return actionStub("ai") end
 package.preload["actions.app_launcher"] = function() return actionStub("app") end
 package.preload["actions.window_management"] = function() return actionStub("window") end
+package.preload["actions.two_panes_finder"] = function() return actionStub("two_panes_finder") end
 package.preload["actions.utility_command"] = function() return actionStub("utility") end
 package.preload["actions.url_commands"] = function() return actionStub("url") end
 package.preload["actions.file_name_copy"] = function() return actionStub("file_name_copy") end
@@ -152,6 +153,8 @@ local requiredBindings = {
     action = { type = "ai", promptPath = promptDir .. "bio-ai_expert.md", model = "gemini-flash-latest", model_failover = "gemini-flash-lite-latest", mode = "display" } },
   { modifiers = { "cmd", "alt", "shift" }, key = "r",
     action = { type = "ai", promptPath = promptDir .. "review-text_compact.md", model = "gemini-flash-latest", model_failover = "gemini-flash-lite-latest", mode = "replace" } },
+  { modifiers = { "cmd", "alt", "shift" }, key = "f",
+    action = { type = "two_panes_finder" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "g",
     action = { type = "url", command = "google" } },
   { modifiers = { "cmd", "alt", "shift" }, key = "j",
@@ -173,6 +176,7 @@ local function actionArguments(action)
   if action.type == "ai" then return { action.promptPath, action.model, action.mode, action.model_failover } end
   if action.type == "app" then return { action.app } end
   if action.type == "window" or action.type == "url" then return { action.command } end
+  if action.type == "two_panes_finder" then return {} end
   if action.type == "utility" then return { action.executablePath, action.scriptPath } end
   error("unsupported test action type: " .. tostring(action.type))
 end
@@ -837,7 +841,7 @@ package.preload["input_source_guard"] = function()
 end
 for _, name in ipairs({
   "actions.ai_commands", "actions.app_launcher",
-  "actions.window_management", "actions.utility_command", "actions.url_commands", "components.hud",
+  "actions.window_management", "actions.two_panes_finder", "actions.utility_command", "actions.url_commands", "components.hud",
 }) do
   package.loaded[name] = nil
   package.preload[name] = function() error("main must not load action module " .. name) end
