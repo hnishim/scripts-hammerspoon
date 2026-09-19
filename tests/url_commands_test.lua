@@ -4,6 +4,14 @@ local captureCalls = {}
 local promptCalls = {}
 local selectionResult = { status = "selected", text = "選択語" }
 local promptResult = { status = "submitted", text = "入力語" }
+local pendingPromptCallbacks = {}
+local promptStarts = true
+local function finishPrompt(result)
+  local callback = table.remove(pendingPromptCallbacks, 1)
+  assert(callback, "manual-input callback is pending")
+  callback(result)
+  return callback
+end
 local openMode = "ok"
 
 local function assertEqual(actual, expected, message)
@@ -16,8 +24,8 @@ local function assertURL(expected, message)
 end
 
 local function resetCalls()
-  alerts, openedURLs, captureCalls, promptCalls = {}, {}, {}, {}
-  openMode = "ok"
+  alerts, openedURLs, captureCalls, promptCalls, pendingPromptCallbacks = {}, {}, {}, {}, {}
+  openMode, promptStarts = "ok", true
 end
 
 _G.hs = {
@@ -46,9 +54,11 @@ package.preload["components.text_io"] = function()
 end
 package.preload["components.text_prompt"] = function()
   return {
-    request = function(options)
+    request = function(options, callback)
+      assert(type(callback) == "function", "manual input is asynchronous")
       promptCalls[#promptCalls + 1] = options
-      return promptResult
+      pendingPromptCallbacks[#pendingPromptCallbacks + 1] = callback
+      return promptStarts
     end,
   }
 end
@@ -75,6 +85,8 @@ selectionResult = { status = "none" }
 promptResult = { status = "submitted", text = "空 白 日本語&?#" }
 assert(urlCommands.run("google") ~= false, "no-selection run starts")
 assertEqual(#promptCalls, 1, "no selection prompts exactly once")
+assertEqual(#openedURLs, 0, "pending input does not open a URL")
+local manualCallback = finishPrompt(promptResult)
 assertURL("https://www.google.com/search?q=%E7%A9%BA%20%E7%99%BD%20%E6%97%A5%E6%9C%AC%E8%AA%9E%26%3F%23", "manual input")
 
 for _, status in ipairs({ "cancelled", "empty", "error" }) do
@@ -83,6 +95,8 @@ for _, status in ipairs({ "cancelled", "empty", "error" }) do
   promptResult = { status = status }
   urlCommands.run("google")
   assertEqual(#promptCalls, 1, "prompt terminal state calls prompt once: " .. status)
+  assertEqual(#openedURLs, 0, "pending terminal state opens no URL: " .. status)
+  finishPrompt(promptResult)
   assertEqual(#openedURLs, 0, "prompt terminal state opens no URL: " .. status)
   assert(#alerts > 0, "prompt terminal state alerts: " .. status)
 end
@@ -119,5 +133,28 @@ assertEqual(urlCommands.run("unknown"), false, "invalid command is rejected")
 assertEqual(#captureCalls, 0, "invalid command does not acquire text")
 assertEqual(#openedURLs, 0, "invalid command opens no URL")
 assert(#alerts > 0, "invalid command alerts")
+
+
+-- The same pending input must not open twice when the form reports a terminal
+-- state again, and a repeated command must not open a stale prompt's result.
+resetCalls()
+selectionResult = { status = "none" }
+assert(urlCommands.run("google") ~= false, "first pending URL prompt starts")
+local staleCallback = pendingPromptCallbacks[1]
+local priorCalls = #promptCalls
+urlCommands.run("google")
+assertEqual(#openedURLs, 0, "re-entry cannot open URL while input is pending")
+assert(#promptCalls <= priorCalls + 1, "re-entry is bounded")
+staleCallback({ status = "cancelled" })
+staleCallback({ status = "submitted", text = "stale input" })
+assertEqual(#openedURLs, 0, "cancelled or stale callback cannot open a URL")
+-- An implementation may reject the second prompt or replace the first one.
+-- In either case, an old callback must not open a URL.
+resetCalls()
+selectionResult = { status = "none" }
+urlCommands.run("dictionary")
+assertEqual(#openedURLs, 0, "dictionary waits for async input")
+finishPrompt({ status = "submitted", text = "a & b" })
+assertURL("mkdictionaries:///?text=a%20%26%20b&category=en-ja&scope=headword", "dictionary async input")
 
 print("url_commands_test: ok")
