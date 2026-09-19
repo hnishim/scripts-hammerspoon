@@ -293,7 +293,8 @@ local function logCursorFailure(diagnostic)
       "ancestor_title_present", "ancestor_description_present",
       "ancestor_identifier_present", "ancestor_explorer_match",
       "selection_count", "path_state", "app_element", "focused_window",
-      "main_window", "window_source", "document_state" }
+      "main_window", "focused_window_state", "main_window_state",
+      "window_source", "document_state" }
     for _, key in ipairs(keys) do
       local value = diagnostic[key]
       if value ~= nil then
@@ -364,7 +365,8 @@ local function cursorCopyCommand(app, diagnostic)
   end
   local roleOK, role = pcall(focused.attributeValue, focused, "AXRole")
   diagnostic.focused_role_state = not roleOK and "exception"
-    or (role == nil and "nil" or (type(role) ~= "string" and "invalid" or "ok"))
+    or (role == nil and "nil" or ((type(role) ~= "string"
+      or not role:match("^AX[%a%d]+$")) and "invalid" or "ok"))
   diagnostic.focused_role = diagnosticRole(role)
   if not roleOK then
     diagnostic.stage, diagnostic.kind = "focused-role", "exception"
@@ -407,14 +409,30 @@ local function cursorCopyCommand(app, diagnostic)
     diagnostic.stage, diagnostic.kind = "app-element", appOK and "nil" or "exception"
     return nil
   end
+  if type(appElement.attributeValue) ~= "function" then
+    diagnostic.stage, diagnostic.kind = "app-element", "invalid"
+    return nil
+  end
 
-  local window = axAttribute(appElement, "AXFocusedWindow")
+  -- Preserve the original focused -> main -> child fallback order while retaining
+  -- each attempted window query's nil/exception/invalid distinction.
+  local function readWindow(attribute)
+    local ok, value = pcall(appElement.attributeValue, appElement, attribute)
+    if not ok then return nil, "exception" end
+    if value == nil then return nil, "nil" end
+    if type(value.attributeValue) ~= "function" then return value, "invalid" end
+    return value, "ok"
+  end
+  local window, focusedState = readWindow("AXFocusedWindow")
   diagnostic.focused_window = tostring(window ~= nil)
+  diagnostic.focused_window_state = focusedState
   if window then
     diagnostic.window_source = "focused"
   else
-    window = axAttribute(appElement, "AXMainWindow")
+    local mainState
+    window, mainState = readWindow("AXMainWindow")
     diagnostic.main_window = tostring(window ~= nil)
+    diagnostic.main_window_state = mainState
     if window then
       diagnostic.window_source = "main"
     else
@@ -423,7 +441,11 @@ local function cursorCopyCommand(app, diagnostic)
     end
   end
   if not window then
-    diagnostic.stage, diagnostic.kind = "window", "nil"
+    diagnostic.stage = "window"
+    diagnostic.kind = (diagnostic.focused_window_state == "exception"
+      or diagnostic.main_window_state == "exception") and "exception"
+      or ((diagnostic.focused_window_state == "invalid"
+        or diagnostic.main_window_state == "invalid") and "invalid" or "nil")
     return nil
   end
   local documentOK, document
