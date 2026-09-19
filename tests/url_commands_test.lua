@@ -144,12 +144,11 @@ local staleCallback = pendingPromptCallbacks[1]
 local priorCalls = #promptCalls
 urlCommands.run("google")
 assertEqual(#openedURLs, 0, "re-entry cannot open URL while input is pending")
-assert(#promptCalls <= priorCalls + 1, "re-entry is bounded")
+assertEqual(#promptCalls, priorCalls, "re-entry does not create another live input prompt")
 staleCallback({ status = "cancelled" })
 staleCallback({ status = "submitted", text = "stale input" })
 assertEqual(#openedURLs, 0, "cancelled or stale callback cannot open a URL")
--- An implementation may reject the second prompt or replace the first one.
--- In either case, an old callback must not open a URL.
+-- A cancelled prompt cannot open a URL, even if a delayed duplicate completion arrives.
 resetCalls()
 selectionResult = { status = "none" }
 urlCommands.run("dictionary")
