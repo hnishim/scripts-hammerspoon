@@ -116,6 +116,31 @@ eq(results[index].text, nil, "cancel has no input text")
 send("submit", "late completion")
 eq(callbacks[index], 1, "cancel cannot be followed by submission")
 
+-- Window Escape dismissal and focused Cmd-W are cancellation, not submission.
+started, index = request()
+assert(started ~= false, "Escape close prompt starts")
+local escapeView = views[#views]
+assert(type(escapeView.windowCallbackFn) == "function", "input view owns its close callback")
+escapeView.windowCallbackFn("closing", escapeView)
+eq(results[index].status, "cancelled", "native Escape/window close cancels")
+eq(callbacks[index], 1, "native close reports once")
+
+started, index = request()
+assert(started ~= false, "Cmd-W prompt starts")
+local closeView = views[#views]
+closeView.windowCallbackFn("focusChange", closeView, true)
+local keyTap = taps[#taps]
+assert(keyTap and keyTap.active, "focused input monitors close key")
+local cmdW = {
+  getFlags = function() return { cmd = true } end,
+  getKeyCode = function() return 13 end,
+}
+eq(keyTap.callback(cmdW), true, "focused Cmd-W is consumed")
+eq(results[index].status, "cancelled", "Cmd-W cancels active input")
+eq(callbacks[index], 1, "Cmd-W callback fires once")
+eq(keyTap.active, false, "closing stops the key monitor")
+eq(keyTap.callback(cmdW), false, "stale key monitor cannot consume background Cmd-W")
+
 -- A second call while a prompt is visible must not create a second live form.
 started, index = request()
 assert(started ~= false, "pending prompt starts")
