@@ -342,6 +342,18 @@ _G.hs = {
 }
 
 package.path = "./?.lua;" .. package.path
+package.preload["components.hud"] = function()
+  return {
+    showTransient = function(message, duration)
+      alerts[#alerts + 1] = {
+        message = message,
+        duration = duration,
+        kind = message == successMessage and "success" or "failure",
+      }
+      return true
+    end,
+  }
+end
 local utilityCommand = require("actions.utility_command")
 local windowManagement = require("actions.window_management")
 

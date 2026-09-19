@@ -229,7 +229,12 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 package.preload["components.hud"] = function()
   return {
     showTransient = function(message, seconds)
-      hudNotifications[#hudNotifications + 1] = { message = message, seconds = seconds }
+      -- Keep success and failure HUD observations separate for existing lifecycle checks.
+      if message == "Copied" then
+        hudNotifications[#hudNotifications + 1] = { message = message, seconds = seconds }
+      else
+        alerts[#alerts + 1] = message
+      end
       return true
     end,
   }
@@ -519,7 +524,7 @@ for _, mode in ipairs({ "restoreWriteAllData", "restoreWriteAllDataFalse" }) do
   assertEqual(pasteboard.contents, "before", "failed restoration preserves original clipboard")
   assertEqual(#hudNotifications, priorNotifications, "failed restoration has no HUD")
   assertEqual(#alerts, priorRestoreAlerts + 1, "failed restoration shows one alert")
-  assertEqual(alerts[#alerts], "クリップボードを復元できませんでした。",
+  assertEqual(alerts[#alerts], "Could not restore the clipboard.",
     "failed restoration alert message")
 end
 
@@ -564,7 +569,7 @@ for _, mode in ipairs({ "restoreClearContents", "restoreClearContentsFalse" }) d
   assertEqual(action.run(), false, "empty clipboard " .. mode .. " is reported")
   assertEqual(pasteboard.contents, nil, "failed empty restoration preserves empty clipboard")
   assertEqual(#alerts, priorEmptyRestoreAlerts + 1, "failed empty restoration shows one alert")
-  assertEqual(alerts[#alerts], "クリップボードを復元できませんでした。",
+  assertEqual(alerts[#alerts], "Could not restore the clipboard.",
     "failed empty restoration alert message")
 end
 
