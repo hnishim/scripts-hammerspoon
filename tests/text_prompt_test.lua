@@ -12,8 +12,9 @@ local function chain(self) return self end
 local function newView(frame)
   local view = { frame = frame, shown = false, deleted = false }
   view.windowStyle, view.windowTitle, view.level = chain, chain, chain
-  view.allowTextEntry, view.allowGestures, view.shadow = chain, chain, chain
-  view.closeOnEscape, view.transparent, view.opaque = chain, chain, chain
+  view.allowTextEntry, view.allowGestures, view.transparent, view.opaque = chain, chain, chain, chain
+  function view:shadow(value) self.shadowEnabled = value; return self end
+  function view:closeOnEscape(value) self.escapeEnabled = value; return self end
   function view:windowCallback(cb) self.windowCallbackFn = cb; return self end
   function view:userContentController(controller) self.controller = controller; return self end
   function view:html(value) self.htmlValue = value; return self end
@@ -25,7 +26,8 @@ local function newView(frame)
   function view:delete()
     self.deleted = true
     self.deleteCount = (self.deleteCount or 0) + 1
-    if failures.delete then error("delete failed") end
+    if failures.delete == "raise" then error("delete failed") end
+    if failures.delete == "return" then return false end
     return true
   end
   views[#views + 1] = view
@@ -48,7 +50,11 @@ _G.hs = {
     usercontent = { new = function(_)
       if failures.controller then error("controller failed") end
       local controller = {}
-      function controller:setCallback(cb) self.callback = cb; return self end
+      function controller:setCallback(cb)
+        if failures.controllerCallback then error("controller callback registration failed") end
+        self.callback = cb
+        return self
+      end
       function controller:injectScript(_) return self end
       controllers[#controllers + 1] = controller
       return controller
@@ -57,10 +63,29 @@ _G.hs = {
   eventtap = {
     event = { types = { keyDown = 10 } },
     new = function(_, cb)
-      local tap = { callback = cb, active = false }
-      function tap:start() self.active = true; return self end
-      function tap:stop() self.active = false; return self end
-      function tap:delete() self.deleted = true; self.active = false; return true end
+      if failures.tapNew then error("event tap construction failed") end
+      local tap = { callback = cb, active = false, startCount = 0, stopCount = 0, deleteCount = 0 }
+      function tap:start()
+        self.startCount = self.startCount + 1
+        if failures.tapStart then error("event tap start failed") end
+        self.active = true
+        return self
+      end
+      function tap:stop()
+        self.stopCount = self.stopCount + 1
+        self.active = false
+        if failures.tapStop == "raise" then error("event tap stop failed") end
+        if failures.tapStop == "return" then return false end
+        return self
+      end
+      function tap:delete()
+        self.deleteCount = self.deleteCount + 1
+        self.deleted = true
+        self.active = false
+        if failures.tapDelete == "raise" then error("event tap deletion failed") end
+        if failures.tapDelete == "return" then return false end
+        return self
+      end
       taps[#taps + 1] = tap
       return tap
     end,
@@ -171,5 +196,89 @@ started, index = request()
 assert(started ~= false, "new prompt starts after failures")
 send("cancel")
 eq(results[index].status, "cancelled", "recovered prompt completes")
+
+
+-- Focus loss must return key handling to the background application, and
+-- subsequent focus acquisition must safely re-enable only this panel's tap.
+started, index = request()
+assert(started ~= false, "focus-transition input starts")
+local focusView = views[#views]
+focusView.windowCallbackFn("focusChange", focusView, true)
+local focusTap = taps[#taps]
+assert(focusTap and focusTap.active, "focused prompt monitor is active")
+focusView.windowCallbackFn("focusChange", focusView, false)
+eq(focusTap.active, false, "focus loss stops input key monitoring")
+eq(focusTap.callback(cmdW), false, "background Cmd-W is not consumed")
+focusView.windowCallbackFn("focusChange", focusView, true)
+assert(focusTap.active, "focus recovery restarts scoped monitoring")
+eq(focusTap.callback(cmdW), true, "refocused Cmd-W is consumed")
+eq(results[index].status, "cancelled", "refocused close cancels")
+eq(callbacks[index], 1, "focus transitions produce one cancellation")
+
+-- A focused close key must be consumed independently of cleanup success.
+-- After the attempted cleanup, a stale tap cannot intercept background keys.
+local function assertCloseFailure(label, kind, mode)
+  failures[kind] = mode
+  local ok, current = request()
+  assert(ok ~= false, label .. ": prompt starts")
+  local view = views[#views]
+  view.windowCallbackFn("focusChange", view, true)
+  local tap = taps[#taps]
+  assert(tap and tap.active, label .. ": focused monitor started")
+  eq(tap.callback(cmdW), true, label .. ": Cmd-W is consumed despite cleanup failure")
+  eq(results[current].status, "cancelled", label .. ": completion cancels")
+  eq(callbacks[current], 1, label .. ": completion published exactly once")
+  eq(view.deleteCount, 1, label .. ": view cleanup attempted")
+  eq(tap.stopCount, 1, label .. ": monitor stop attempted")
+  eq(tap.deleteCount, 1, label .. ": monitor delete attempted")
+  eq(tap.callback(cmdW), false, label .. ": stale monitor passes background Cmd-W")
+  failures[kind] = nil
+  local restarted, fresh = request()
+  assert(restarted ~= false, label .. ": new input starts after cleanup failure")
+  send("cancel")
+  eq(results[fresh].status, "cancelled", label .. ": next input works")
+  eq(callbacks[fresh], 1, label .. ": next input completes once")
+end
+
+assertCloseFailure("WebView deletion error", "delete", "raise")
+assertCloseFailure("event monitor stop error", "tapStop", "raise")
+assertCloseFailure("event monitor deletion error", "tapDelete", "return")
+
+-- Input startup failures must not leave an orphaned WebView or event monitor.
+local function assertStartupFailure(label, kind)
+  failures[kind] = true
+  local viewBefore, tapBefore = #views, #taps
+  local startedOK, current = request()
+  if kind == "tapStart" then
+    assert(startedOK ~= false, label .. ": view starts before focus activation")
+    local view = views[#views]
+    view.windowCallbackFn("focusChange", view, true)
+  else
+    eq(startedOK, false, label .. ": request cannot start")
+  end
+  eq(results[current].status, "error", label .. ": error is reported")
+  eq(callbacks[current], 1, label .. ": error callback is delivered once")
+  local view = views[#views]
+  if #views > viewBefore then
+    eq(view.deleteCount, 1, label .. ": created view cleanup attempted")
+  end
+  if #taps > tapBefore then
+    local tap = taps[#taps]
+    assert(not tap.active, label .. ": failed monitor is inactive")
+    eq(tap.deleteCount, 1, label .. ": failed monitor delete attempted")
+    eq(tap.callback(cmdW), false, label .. ": failed monitor ignores background key")
+  end
+  failures[kind] = nil
+  local recovered, fresh = request()
+  assert(recovered ~= false, label .. ": later input starts")
+  send("cancel")
+  eq(results[fresh].status, "cancelled", label .. ": later input cancels")
+  eq(callbacks[fresh], 1, label .. ": later input completes once")
+end
+
+assertStartupFailure("user content controller creation", "controller")
+assertStartupFailure("controller callback registration", "controllerCallback")
+assertStartupFailure("event monitor construction", "tapNew")
+assertStartupFailure("event monitor start", "tapStart")
 
 print("text_prompt_test: ok")
