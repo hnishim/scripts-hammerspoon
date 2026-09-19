@@ -573,4 +573,239 @@ for _, mode in ipairs({ "restoreClearContents", "restoreClearContentsFalse" }) d
     "failed empty restoration alert message")
 end
 
+
+-- HIR-279: selection-acquisition diagnostics are observable without changing clipboard behavior.
+-- These tests exercise the real action via a mocked macOS Accessibility boundary.
+local diagnosticLines = {}
+hs.logger = {
+  new = function()
+    local function record(_, line)
+      diagnosticLines[#diagnosticLines + 1] = line
+    end
+    return { w = record, e = record, i = record, warning = record, error = record }
+  end,
+}
+
+local function assertDiagnostic(stage, kind, description, extras)
+  assertEqual(#diagnosticLines, 1, description .. " emits exactly one diagnostic")
+  local line = diagnosticLines[1]
+  assertEqual(type(line), "string", description .. " emits a string")
+  assert(not line:find("[\r\n]"), description .. " emits one line")
+  for _, field in ipairs({
+    "issue=HIR-279", "stage=" .. stage, "kind=" .. kind, "timestamp=",
+  }) do
+    assert(line:find(field, 1, true), description .. " missing " .. field .. ": " .. line)
+  end
+  for _, field in ipairs(extras or {}) do
+    assert(line:find(field, 1, true), description .. " missing " .. field .. ": " .. line)
+  end
+  for _, secret in ipairs({
+    "SECRET-CLIPBOARD-VALUE", "SECRET-PRIVATE-PATH", "/Users/test/",
+    "file://", "SECRET-AX-TITLE",
+  }) do
+    assert(not line:find(secret, 1, true), description .. " leaked " .. secret)
+  end
+  assert(#line <= 2048, description .. " diagnostic is bounded")
+end
+
+local originalSystemWide = hs.axuielement.systemWideElement
+local originalApplicationElement = hs.axuielement.applicationElement
+local originalFrontmostApplication = hs.application.frontmostApplication
+local function diagnosticCase(description, options)
+  resetClipboard()
+  frontmostName = "Cursor"
+  diagnosticLines = {}
+  local initialClipboard = pasteboard.changeCount
+  pasteboard.contents = "SECRET-CLIPBOARD-VALUE"
+  pasteboard.data["public.utf8-plain-text"] = pasteboard.contents
+  local originalContents = pasteboard.contents
+  cursorActiveFile = "/Users/test/SECRET-PRIVATE-PATH/active.lua"
+  cursorExplorerFile = "/Users/test/SECRET-PRIVATE-PATH/selected.lua"
+  cursorExplorerFolder = "/Users/test/SECRET-PRIVATE-PATH/folder"
+
+  failureMode = options.failureMode
+  cursorFocus = options.focus or "editor"
+  hs.application.frontmostApplication = originalFrontmostApplication
+  hs.axuielement.systemWideElement = originalSystemWide
+  hs.axuielement.applicationElement = originalApplicationElement
+
+  if options.frontmostChanges then
+    local queries = 0
+    hs.application.frontmostApplication = function()
+      queries = queries + 1
+      if queries == 1 then return originalFrontmostApplication() end
+      return { name = function() return "Safari" end, pid = function() return 234 end }
+    end
+  end
+  if options.missingAppElement then
+    hs.axuielement.applicationElement = function() return nil end
+  end
+  if options.mutateAX or options.focusQueryException then
+    hs.axuielement.systemWideElement = function()
+      local system = originalSystemWide()
+      if options.focusQueryException then
+        system.attributeValue = function() error("SECRET-AX-TITLE") end
+      elseif system and options.mutateAX then
+        options.mutateAX(cursorAXModel)
+      end
+      return system
+    end
+  end
+  local alertCount, successCount = #alerts, #hudNotifications
+  local ok = action.run()
+  hs.application.frontmostApplication = originalFrontmostApplication
+  hs.axuielement.systemWideElement = originalSystemWide
+  hs.axuielement.applicationElement = originalApplicationElement
+  assertEqual(ok, false, description .. " does not copy")
+  assertEqual(#alerts, alertCount + 1, description .. " retains its one selection error alert")
+  assertEqual(alerts[#alerts], "Could not get the selected item from Cursor.",
+    description .. " does not change user-facing behavior")
+  assertEqual(#hudNotifications, successCount, description .. " has no success HUD")
+  assertEqual(#pasteboardWrites, 0, description .. " never writes clipboard")
+  assertEqual(pasteboard.contents, originalContents, description .. " preserves clipboard value")
+  assertEqual(pasteboard.changeCount, initialClipboard, description .. " preserves clipboard count")
+  assertEqual(timerCalls, 0, description .. " does not schedule a retry")
+  assertEqual(#performedActions, 0, description .. " does not perform new AX actions")
+  assertDiagnostic(options.stage, options.kind, description, options.extras)
+end
+
+diagnosticCase("frontmost changed after dispatch", {
+  frontmostChanges = true, stage = "frontmost-app", kind = "mismatch",
+})
+diagnosticCase("system-wide API returned nil", {
+  failureMode = "cursorReturn", stage = "system-wide-element", kind = "nil",
+})
+diagnosticCase("system-wide API raised", {
+  failureMode = "cursorError", stage = "system-wide-element", kind = "exception",
+})
+diagnosticCase("focused element was nil", {
+  focus = "missing", stage = "focus-query", kind = "nil",
+})
+diagnosticCase("focused element query raised", {
+  focusQueryException = true, stage = "focus-query", kind = "exception",
+})
+diagnosticCase("focused role query raised", {
+  mutateAX = function(model)
+    model.focused.attributeValue = function(_, attribute)
+      if attribute == "AXRole" then error("SECRET-AX-TITLE") end
+      return nil
+    end
+  end,
+  stage = "focused-role", kind = "exception",
+})
+diagnosticCase("Explorer focused row has no valid path", {
+  focus = "explorer-file",
+  mutateAX = function(model)
+    model.focused.attributeValue = function(_, attribute)
+      if attribute == "AXParent" then return makeAXElement({ AXRole = "AXOutline", AXTitle = "Files Explorer" }) end
+      if attribute == "AXRole" then return "AXRow" end
+      if attribute == "AXTitle" then return "SECRET-AX-TITLE" end
+      return nil
+    end
+  end,
+  stage = "explorer-path", kind = "nil", extras = { "explorer=true" },
+})
+diagnosticCase("Explorer multiple selection cannot yield one path", {
+  focus = "explorer-outline",
+  mutateAX = function(model)
+    local focused = model.focused
+    local originalAttribute = focused.attributeValue
+    focused.attributeValue = function(self, attribute)
+      if attribute == "AXSelectedRows" then
+        return { makeAXElement({ AXRole = "AXRow" }), makeAXElement({ AXRole = "AXRow" }) }
+      end
+      return originalAttribute(self, attribute)
+    end
+  end,
+  stage = "explorer-path", kind = "invalid", extras = { "selection_count=2" },
+})
+diagnosticCase("Cursor application AX element missing", {
+  missingAppElement = true, stage = "app-element", kind = "nil",
+})
+diagnosticCase("focused and main windows both missing", {
+  mutateAX = function(model)
+    model.appElement.attributeValue = function(_, attribute)
+      if attribute == "AXChildren" then return {} end
+      return nil
+    end
+  end,
+  stage = "window", kind = "nil",
+})
+diagnosticCase("window document is nil", {
+  mutateAX = function(model)
+    local window = model.appElement:attributeValue("AXFocusedWindow")
+    local originalAttribute = window.attributeValue
+    window.attributeValue = function(self, attribute)
+      if attribute == "AXDocument" then return nil end
+      return originalAttribute(self, attribute)
+    end
+  end,
+  stage = "active-document", kind = "nil",
+  extras = { "window_source=focused", "explorer=false", "document_state=nil" },
+})
+diagnosticCase("window document is not a file URL", {
+  mutateAX = function(model)
+    local window = model.appElement:attributeValue("AXFocusedWindow")
+    local originalAttribute = window.attributeValue
+    window.attributeValue = function(self, attribute)
+      if attribute == "AXDocument" then return "https://example.invalid/SECRET-PRIVATE-PATH" end
+      return originalAttribute(self, attribute)
+    end
+  end,
+  stage = "active-document", kind = "invalid",
+  extras = { "document_state=non-file" },
+})
+diagnosticCase("window document query raised", {
+  mutateAX = function(model)
+    local window = model.appElement:attributeValue("AXFocusedWindow")
+    local originalAttribute = window.attributeValue
+    window.attributeValue = function(self, attribute)
+      if attribute == "AXDocument" then error("SECRET-AX-TITLE") end
+      return originalAttribute(self, attribute)
+    end
+  end,
+  stage = "active-document", kind = "exception",
+})
+diagnosticCase("non-Explorer outline is classified as fallback", {
+  focus = "non-explorer-outline",
+  mutateAX = function(model)
+    local window = model.appElement:attributeValue("AXFocusedWindow")
+    local originalAttribute = window.attributeValue
+    window.attributeValue = function(self, attribute)
+      if attribute == "AXDocument" then return nil end
+      return originalAttribute(self, attribute)
+    end
+  end,
+  stage = "active-document", kind = "nil", extras = { "explorer=false" },
+})
+
+-- An absent/failing logger must never interfere with error presentation or clipboard safety.
+resetClipboard()
+frontmostName = "Cursor"
+cursorFocus = "missing"
+diagnosticLines = {}
+local savedLogger = hs.logger
+hs.logger = { new = function() error("logger unavailable") end }
+local priorDiagnosticAlerts = #alerts
+assertEqual(action.run(), false, "diagnostic logger failure is nonfatal")
+assertEqual(#alerts, priorDiagnosticAlerts + 1, "diagnostic logger failure preserves the alert")
+assertEqual(#pasteboardWrites, 0, "diagnostic logger failure does not mutate the clipboard")
+hs.logger = savedLogger
+
+-- Successful Explorer/Editor copies and clipboard-specific failures do not emit selection diagnostics.
+for _, focus in ipairs({ "editor", "explorer-file", "explorer-folder" }) do
+  resetClipboard()
+  frontmostName = "Cursor"
+  cursorFocus = focus
+  diagnosticLines = {}
+  assertEqual(action.run(), true, "normal " .. focus .. " copy succeeds with logger enabled")
+  assertEqual(#diagnosticLines, 0, "normal " .. focus .. " copy has no diagnostic")
+end
+resetClipboard()
+frontmostName = "Cursor"
+failureMode = "allContentTypes"
+diagnosticLines = {}
+assertEqual(action.run(), false, "clipboard snapshot error still aborts early")
+assertEqual(#diagnosticLines, 0, "clipboard error does not masquerade as AX selection failure")
+
 print("file_name_copy_test: ok")
