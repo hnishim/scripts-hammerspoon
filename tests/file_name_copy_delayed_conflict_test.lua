@@ -102,7 +102,12 @@ _G.hs = {
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 package.preload["components.hud"] = function()
-  return { showTransient = function() return true end }
+  return {
+    showTransient = function(message)
+      if message ~= "Copied" then alerts[#alerts + 1] = message end
+      return true
+    end,
+  }
 end
 
 local action = require("actions.file_name_copy")
@@ -131,8 +136,8 @@ assertEqual(pasteboard.contents, "/Users/external/important.txt",
   "direct Cursor conflict preserves current clipboard")
 assertEqual(writes, 0, "direct Cursor conflict does not write or restore")
 assertEqual(#actions, 0, "direct Cursor conflict performs no AX menu action")
-assertEqual(#alerts, 1, "direct Cursor conflict reports one alert")
-assertEqual(alerts[1], "クリップボードの競合を検出したため、復元せず終了しました。",
-  "direct Cursor conflict alert")
+assertEqual(#alerts, 1, "direct Cursor conflict reports one HUD notification")
+assertEqual(alerts[1], "Clipboard changed unexpectedly; stopped without restoring it.",
+  "direct Cursor conflict notification")
 
 print("file_name_copy_delayed_conflict_test: PASS")

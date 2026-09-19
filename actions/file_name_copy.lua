@@ -5,8 +5,8 @@ local operationGeneration = 0
 local pendingTimer
 
 local function alert(message)
-  if type(hs) == "table" and type(hs.alert) == "table" and type(hs.alert.show) == "function" then
-    pcall(hs.alert.show, message, 2)
+  if type(hud) == "table" and type(hud.showTransient) == "function" then
+    pcall(hud.showTransient, message, 2)
   end
 end
 
@@ -147,11 +147,11 @@ end
 local function runFinder()
   local contents = finderFileNames()
   if not contents then
-    alert("Finderの選択項目を取得できませんでした。")
+    alert("Could not get selected Finder items.")
     return false
   end
   if not writeContents(contents) then
-    alert("ファイル名をクリップボードへコピーできませんでした。")
+    alert("Could not copy file name to the clipboard.")
     return false
   end
   return true
@@ -319,18 +319,18 @@ end
 local function runCursorDirect(snapshot, beforeCount, expectedPath)
   local name = copiedPathName(expectedPath)
   if not name then
-    alert("Cursorから有効なファイルパスを取得できませんでした。")
+    alert("Could not get a valid file path from Cursor.")
     return false
   end
   if not clipboardMatches(snapshot.contents, beforeCount) then
-    alert("クリップボードの競合を検出したため、復元せず終了しました。")
+    alert("Clipboard changed unexpectedly; stopped without restoring it.")
     return false
   end
   if writeContents(name) then return true end
   if restoreClipboard(snapshot, snapshot.contents, beforeCount) then
-    alert("ファイル名をクリップボードへコピーできませんでした。")
+    alert("Could not copy file name to the clipboard.")
   else
-    alert("クリップボードを復元できませんでした。")
+    alert("Could not restore the clipboard.")
   end
   return false
 end
@@ -338,18 +338,18 @@ end
 local function runCursor()
   local snapshotOK, snapshot, beforeCount = clipboardSnapshot()
   if not snapshotOK then
-    alert("クリップボードを安全に退避できないため、Cursorの処理を中止しました。")
+    alert("Could not safely preserve the clipboard; Cursor operation canceled.")
     return false
   end
   local app = frontmostApplication()
   if frontmostName(app) ~= "Cursor" then
-    alert("Cursorの選択項目を取得できませんでした。")
+    alert("Could not get the selected item from Cursor.")
     return false
   end
 
   local copyOK, expectedPath = cursorCopyCommand(app)
   if not copyOK then
-    alert("Cursorの選択項目を取得できませんでした。")
+    alert("Could not get the selected item from Cursor.")
     return false
   end
   return runCursorDirect(snapshot, beforeCount, expectedPath)

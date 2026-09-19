@@ -23,6 +23,19 @@ io.open = function(path, mode)
   return realIoOpen(path, mode)
 end
 
+package.preload["components.hud"] = function()
+  return {
+    showTransient = function(message, seconds)
+      if _G.hs and hs.alert and type(hs.alert.show) == "function" then
+        return hs.alert.show(message, seconds)
+      end
+      return nil
+    end,
+  }
+end
+
 local ok, err = pcall(dofile, "tests/utility_command_test.lua")
 io.open = realIoOpen
+package.preload["components.hud"] = nil
+package.loaded["components.hud"] = nil
 if not ok then error(err, 0) end
