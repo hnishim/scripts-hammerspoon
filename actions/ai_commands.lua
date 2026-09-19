@@ -9,13 +9,14 @@ local keychainTimeout = 10
 local httpTimeout = 65
 local operationSequence = 0
 local activeTask
+local pendingInput
 
 local function trim(value)
   return (value or ""):gsub("^%s+", ""):gsub("%s+$", "")
 end
 
 local function showMessage(message) hs.alert.show(message, 2) end
-local function showSafeError() showMessage("Geminiコマンドを実行できませんでした。") end
+local function showSafeError() showMessage("Could not run the Gemini command.") end
 
 local function stopTimer(timer)
   if timer and timer.stop then pcall(timer.stop, timer) end
@@ -279,29 +280,50 @@ local function beginOperation(promptPath, model, modelFailover, input, replaceHa
     replaceHandle = replaceHandle,
   }
   activeTask = state
-  hud.show("Gemini処理中...")
+  hud.show("Processing...")
   startKeychain(state, { model = model, model_failover = modelFailover }, prompt)
   return true
 end
 
 local function promptDisplay(promptPath, model, modelFailover)
-  local result = textPrompt.request({
+  local entry = { done = false }
+  pendingInput = entry
+  local function complete(result)
+    if pendingInput ~= entry or entry.done then return end
+    entry.done = true
+    pendingInput = nil
+    if type(result) ~= "table" then showSafeError(); return end
+    if result.status == "submitted" then
+      beginOperation(promptPath, model, modelFailover, result.text)
+    elseif result.status == "empty" then
+      showMessage("Input is empty.")
+    elseif result.status ~= "cancelled" then
+      showSafeError()
+    end
+  end
+  local ok, started = pcall(textPrompt.request, {
     title = "Gemini AI command",
-    message = "Geminiへ渡すテキストを入力してください。",
-    submit = "実行",
-    cancel = "キャンセル",
-  })
-  if result.status == "submitted" then return beginOperation(promptPath, model, modelFailover, result.text) end
-  if result.status == "cancelled" then return true end
-  if result.status == "empty" then showMessage("入力テキストが空です。"); return false end
-  showSafeError()
-  return false
+    message = "Enter text for Gemini.",
+    submit = "Run",
+    cancel = "Cancel",
+  }, complete)
+  if not ok or started == false then
+    if pendingInput == entry then complete({ status = "error" }) end
+    return false
+  end
+  return true
 end
 
 function M.stop()
   operationSequence = operationSequence + 1
   local state = activeTask
   activeTask = nil
+  local waiting = pendingInput
+  pendingInput = nil
+  if waiting then
+    waiting.done = true
+    pcall(textPrompt.close)
+  end
   if state and not state.done then
     state.done = true
     stopTimer(state.watchdog)
@@ -322,9 +344,10 @@ function M.run(promptPath, model, mode, modelFailover)
     showSafeError(); return false
   end
 
+  if pendingInput then showMessage("Another AI command is running."); return false end
   if activeTask then
     if activeTask.replacementSession then M.stop()
-    else showMessage("別のAIコマンドを実行中です。"); return false end
+    else showMessage("Another AI command is running."); return false end
   end
 
   if mode == "display" then
