@@ -281,4 +281,39 @@ assertStartupFailure("controller callback registration", "controllerCallback")
 assertStartupFailure("event monitor construction", "tapNew")
 assertStartupFailure("event monitor start", "tapStart")
 
+
+-- Input/result must share their basic visual language without fixing a
+-- particular color code, type size or exact layout pixels in regression tests.
+-- The real appearance remains a Local/Human Acceptance item.
+package.preload["components.hud"] = function()
+  return { showTransient = function() return true end }
+end
+local resultPanel = require("components.result_panel")
+local styleStarted, styleIndex = request()
+assert(styleStarted ~= false, "input style fixture starts")
+local inputView = views[#views]
+assert(inputView.htmlValue and inputView.htmlValue:find("<form", 1, true), "input style fixture renders a form")
+send("cancel")
+eq(results[styleIndex].status, "cancelled", "input style fixture cleaned up")
+assert(resultPanel.show("result content"), "result style fixture starts")
+local resultView = views[#views]
+
+local function cssValue(html, property)
+  local found = html and html:match(property .. "%s*:%s*([^;}]+)")
+  if found then found = found:match("^%s*(.-)%s*$") end
+  assert(found and found ~= "", "visual style exposes " .. property)
+  return found
+end
+eq(cssValue(inputView.htmlValue, "background"), cssValue(resultView.htmlValue, "background"),
+  "input and result share panel background")
+eq(cssValue(inputView.htmlValue, "font%-family"), cssValue(resultView.htmlValue, "font%-family"),
+  "input and result share typeface")
+cssValue(inputView.htmlValue, "padding")
+cssValue(resultView.htmlValue, "padding")
+cssValue(inputView.htmlValue, "border%-radius")
+cssValue(resultView.htmlValue, "border%-radius")
+eq(inputView.shadowEnabled, true, "input uses a window shadow")
+eq(resultView.shadowEnabled, true, "result uses a window shadow")
+assert(resultPanel.stop(), "result style fixture closes")
+
 print("text_prompt_test: ok")
