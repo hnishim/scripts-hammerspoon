@@ -317,13 +317,14 @@ local function isExplorerContainer(element, diagnostic)
     present[attribute] = value ~= nil
     if type(value) == "string" and value:lower():find("explorer", 1, true) then
       matched = true
+      break -- Preserve the original short-circuit and avoid extra AX reads on success.
     end
   end
   if diagnostic and (diagnostic.ancestor_role == nil or matched) then
     diagnostic.ancestor_role = "AXOutline"
-    diagnostic.ancestor_title_present = tostring(present.AXTitle)
-    diagnostic.ancestor_description_present = tostring(present.AXDescription)
-    diagnostic.ancestor_identifier_present = tostring(present.AXIdentifier)
+    diagnostic.ancestor_title_present = tostring(present.AXTitle ~= nil and present.AXTitle or "not_read")
+    diagnostic.ancestor_description_present = tostring(present.AXDescription ~= nil and present.AXDescription or "not_read")
+    diagnostic.ancestor_identifier_present = tostring(present.AXIdentifier ~= nil and present.AXIdentifier or "not_read")
     diagnostic.ancestor_explorer_match = tostring(matched)
   end
   return matched
