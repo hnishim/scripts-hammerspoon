@@ -334,8 +334,14 @@ canvasFailure = "new"
 assertEqual(hud.show("Failure"), false, "canvas creation failure is contained")
 assertEqual(#liveTimers("every"), 0, "failed show leaves no animation timer")
 canvasFailure = "show"
+local canvasCountBeforeShowFailure = #canvases
 assertEqual(hud.show("Failure"), false, "canvas show failure is contained")
+assertEqual(#canvases, canvasCountBeforeShowFailure + 1,
+  "canvas show failure creates only the attempted canvas")
+local failedShowCanvas = canvases[#canvases]
+assert(failedShowCanvas.deleted, "canvas show failure deletes attempted canvas")
 assertEqual(#liveTimers("every"), 0, "show failure leaves no animation timer")
+assert(pcall(hud.close), "close remains safe after canvas show failure")
 canvasFailure = nil
 
 timerFailure = "every"
