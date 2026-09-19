@@ -18,7 +18,8 @@ local function newView(frame)
   local view = { frame = frame, active = true, deleted = false, shown = false, callback = nil, htmlValue = nil }
   local function chain(self) return self end
   view.windowStyle, view.windowTitle, view.level, view.allowGestures = chain, chain, chain, chain
-  view.allowTextEntry, view.closeOnEscape, view.shadow = chain, chain, chain
+  view.allowTextEntry, view.shadow = chain, chain
+  function view:closeOnEscape(enabled) self.escapeCloses = enabled; return self end
   function view:windowCallback(callback) self.callback = callback; return self end
   function view:html(value)
     if failures.html == "raise" then error("html failure") end
@@ -111,6 +112,7 @@ assertEqual(panel.show(content), true, "show returns true after displaying valid
 assertEqual(#views, 1, "show creates one WebView")
 local firstView = views[1]
 assertEqual(firstView.shown, true, "show displays the WebView")
+assertEqual(firstView.escapeCloses, true, "result panel supports native Escape close")
 assert(firstView.htmlValue:find("&lt;tag attr=&quot;x&quot;&gt;", 1, true), "HTML escapes tags and quotes")
 assert(firstView.htmlValue:find("結果 &amp; 詳細<br>次の行", 1, true), "HTML escapes content and converts newlines")
 assertEqual(#eventTaps, 1, "show creates one event tap")
@@ -287,5 +289,36 @@ assertStopFailure("event tap stop return failure", "stop", "return")
 assertStopFailure("event tap stop exception", "stop", "raise")
 assertStopFailure("event tap delete return failure", "tapDelete", "return")
 assertStopFailure("event tap delete exception", "tapDelete", "raise")
+
+
+-- A focused close key belongs to the panel even if one cleanup API fails.
+-- Its consumption must not depend on cleanup's success: otherwise Cmd-W can
+-- close an unrelated background window after the foreground panel disappears.
+local function assertKeyCloseDoesNotPropagate(name, kind, mode)
+  resetFailures()
+  assertEqual(panel.show("key close: " .. name), true, name .. " setup")
+  local view, tap = views[#views], eventTaps[#eventTaps]
+  view.callback("focusChange", true)
+  failures[kind] = mode
+  assertEqual(tap.callback(keyEvent({ "cmd" }, 13)), true, name .. " focused Cmd-W remains consumed")
+  assertEqual(view.deleteCount, 1, name .. " attempts WebView cleanup")
+  assertEqual(tap.stopCount, 1, name .. " attempts monitor stop")
+  assertEqual(tap.deleteCount, 1, name .. " attempts monitor deletion")
+  assertEqual(tap.callback(keyEvent({ "cmd" }, 13)), false, name .. " stale monitor does not consume keys")
+  resetFailures()
+  assertEqual(panel.close(), false, name .. " leaves no current panel")
+end
+
+assertKeyCloseDoesNotPropagate("WebView deletion failure", "delete", "return")
+assertKeyCloseDoesNotPropagate("monitor stop failure", "stop", "raise")
+assertKeyCloseDoesNotPropagate("monitor deletion failure", "tapDelete", "return")
+
+-- Repeated show/close must not retain keyboard monitoring after focus loss.
+assertEqual(panel.show("focus scope"), true, "focus scope setup")
+local focusView, focusTap = views[#views], eventTaps[#eventTaps]
+focusView.callback("focusChange", true)
+focusView.callback("focusChange", false)
+assertEqual(focusTap.callback(keyEvent({ "cmd" }, 13)), false, "background Cmd-W is not intercepted")
+assertEqual(panel.stop(), true, "focus scope cleanup")
 
 print("result_panel_test: ok")

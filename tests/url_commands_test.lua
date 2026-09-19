@@ -4,10 +4,29 @@ local captureCalls = {}
 local promptCalls = {}
 local selectionResult = { status = "selected", text = "選択語" }
 local promptResult = { status = "submitted", text = "入力語" }
+local pendingPromptCallbacks = {}
+local promptStarts = true
+local promptFailureNotifies = false
+local promptLive = false
+local function finishPrompt(result)
+  local callback = table.remove(pendingPromptCallbacks, 1)
+  assert(callback, "manual-input callback is pending")
+  promptLive = false
+  callback(result)
+  return callback
+end
 local openMode = "ok"
 
 local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
+end
+
+local function assertEnglishUI(value, context)
+  assert(type(value) == "string", context .. " is text")
+  for _, cp in utf8.codes(value) do
+    assert(not ((cp >= 0x3040 and cp <= 0x30ff) or (cp >= 0x3400 and cp <= 0x9fff)),
+      context .. " contains Japanese UI text")
+  end
 end
 
 local function assertURL(expected, message)
@@ -16,8 +35,9 @@ local function assertURL(expected, message)
 end
 
 local function resetCalls()
-  alerts, openedURLs, captureCalls, promptCalls = {}, {}, {}, {}
-  openMode = "ok"
+  alerts, openedURLs, captureCalls, promptCalls, pendingPromptCallbacks = {}, {}, {}, {}, {}
+  openMode, promptStarts, promptFailureNotifies = "ok", true, false
+  promptLive = false
 end
 
 _G.hs = {
@@ -46,9 +66,20 @@ package.preload["components.text_io"] = function()
 end
 package.preload["components.text_prompt"] = function()
   return {
-    request = function(options)
+    request = function(options, callback)
+      assert(type(callback) == "function", "manual input is asynchronous")
+      for _, key in ipairs({ "title", "message", "submit", "cancel" }) do
+        if options[key] ~= nil then assertEnglishUI(options[key], "URL prompt " .. key) end
+      end
       promptCalls[#promptCalls + 1] = options
-      return promptResult
+      if not promptStarts then
+        if promptFailureNotifies then callback({ status = "error" }) end
+        return false
+      end
+      assert(not promptLive, "only one live URL form is allowed")
+      promptLive = true
+      pendingPromptCallbacks[#pendingPromptCallbacks + 1] = callback
+      return true
     end,
   }
 end
@@ -75,6 +106,8 @@ selectionResult = { status = "none" }
 promptResult = { status = "submitted", text = "空 白 日本語&?#" }
 assert(urlCommands.run("google") ~= false, "no-selection run starts")
 assertEqual(#promptCalls, 1, "no selection prompts exactly once")
+assertEqual(#openedURLs, 0, "pending input does not open a URL")
+local manualCallback = finishPrompt(promptResult)
 assertURL("https://www.google.com/search?q=%E7%A9%BA%20%E7%99%BD%20%E6%97%A5%E6%9C%AC%E8%AA%9E%26%3F%23", "manual input")
 
 for _, status in ipairs({ "cancelled", "empty", "error" }) do
@@ -83,6 +116,8 @@ for _, status in ipairs({ "cancelled", "empty", "error" }) do
   promptResult = { status = status }
   urlCommands.run("google")
   assertEqual(#promptCalls, 1, "prompt terminal state calls prompt once: " .. status)
+  assertEqual(#openedURLs, 0, "pending terminal state opens no URL: " .. status)
+  finishPrompt(promptResult)
   assertEqual(#openedURLs, 0, "prompt terminal state opens no URL: " .. status)
   assert(#alerts > 0, "prompt terminal state alerts: " .. status)
 end
@@ -120,4 +155,48 @@ assertEqual(#captureCalls, 0, "invalid command does not acquire text")
 assertEqual(#openedURLs, 0, "invalid command opens no URL")
 assert(#alerts > 0, "invalid command alerts")
 
+
+-- The same pending input must not open twice when the form reports a terminal
+-- state again, and a repeated command must not open a stale prompt's result.
+resetCalls()
+selectionResult = { status = "none" }
+assert(urlCommands.run("google") ~= false, "first pending URL prompt starts")
+local staleCallback = pendingPromptCallbacks[1]
+local priorCalls = #promptCalls
+urlCommands.run("google")
+assertEqual(#openedURLs, 0, "re-entry cannot open URL while input is pending")
+assertEqual(#promptCalls, priorCalls, "re-entry does not create another live input prompt")
+staleCallback({ status = "cancelled" })
+staleCallback({ status = "submitted", text = "stale input" })
+assertEqual(#openedURLs, 0, "cancelled or stale callback cannot open a URL")
+-- A cancelled prompt cannot open a URL, even if a delayed duplicate completion arrives.
+resetCalls()
+selectionResult = { status = "none" }
+urlCommands.run("dictionary")
+assertEqual(#openedURLs, 0, "dictionary waits for async input")
+finishPrompt({ status = "submitted", text = "a & b" })
+assertURL("mkdictionaries:///?text=a%20%26%20b&category=en-ja&scope=headword", "dictionary async input")
+
+-- A failed WebView startup cannot leave a pending URL form or trigger
+-- any URL. Whether the component reports a synchronous error callback or
+-- only a false return, the command owns one error notification and can retry.
+for _, notifies in ipairs({ true, false }) do
+  resetCalls()
+  selectionResult = { status = "none" }
+  promptStarts, promptFailureNotifies = false, notifies
+  urlCommands.run("google")
+  assertEqual(#promptCalls, 1, "failed URL prompt attempted once")
+  assertEqual(promptLive, false, "failed URL prompt is not left visible")
+  assertEqual(#alerts, 1, "failed URL startup alerts exactly once")
+  assertEqual(#openedURLs, 0, "failed URL startup has no external effect")
+  promptStarts, promptFailureNotifies = true, false
+  assert(urlCommands.run("google") ~= false, "URL input can retry after startup failure")
+  assertEqual(#promptCalls, 2, "retry creates a new URL input")
+  assert(promptLive, "retry has a live URL form")
+  assertEqual(#openedURLs, 0, "retry still waits for user input")
+  finishPrompt({ status = "submitted", text = "after error" })
+  assertURL("https://www.google.com/search?q=after%20error", "URL retry")
+end
+
+for _, message in ipairs(alerts) do assertEnglishUI(message, "URL alert") end
 print("url_commands_test: ok")
