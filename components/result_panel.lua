@@ -74,7 +74,8 @@ local function handleKey(panel, event)
   if not keyOK then return false end
 
   if keyCode == 13 then
-    return cleanup(panel)
+    cleanup(panel)
+    return true
   end
   if keyCode ~= 8 then return false end
 
@@ -117,7 +118,7 @@ local function createView(frame, panel, html)
   panel.view = view
 
   local configured = invokeChain(view, "windowStyle", { "titled", "closable", "resizable" })
-    and invokeChain(view, "windowTitle", "Gemini result")
+    and invokeChain(view, "windowTitle", "Gemini Result")
     and invokeChain(view, "level", hs.drawing.windowLevels.floating)
     and invokeChain(view, "allowGestures", false)
     and invokeChain(view, "allowTextEntry", true)
@@ -154,10 +155,10 @@ function M.show(content)
     tapDeleteOK = true,
     viewDeleteOK = true,
   }
-  local html = [[<!doctype html><html lang="ja"><head><meta charset="utf-8"><style>
-    html, body { background: #1e1e22; color: #f5f5f7; margin: 0; }
+  local html = [[<!doctype html><html lang="en"><head><meta charset="utf-8"><style>
+    html, body { background: rgba(24, 24, 28, 0.86); color: #f5f5f7; margin: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
-    main { box-sizing: border-box; padding: 28px; white-space: normal; line-height: 1.65; }
+    main { box-sizing: border-box; padding: 28px; border-radius: 16px; white-space: normal; line-height: 1.65; }
     .result { font-size: 17px; overflow-wrap: anywhere; }
   </style></head><body><main><div class="result">]] .. htmlEscape(content) .. [[</div></main></body></html>]]
 
