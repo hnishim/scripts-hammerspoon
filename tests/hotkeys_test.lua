@@ -140,6 +140,7 @@ package.preload["actions.ai_commands"] = function() return actionStub("ai") end
 package.preload["actions.app_launcher"] = function() return actionStub("app") end
 package.preload["actions.window_management"] = function() return actionStub("window") end
 package.preload["actions.two_panes_finder"] = function() return actionStub("two_panes_finder") end
+package.preload["actions.chicago_title_case"] = function() return actionStub("chicago_title_case") end
 package.preload["actions.utility_command"] = function() return actionStub("utility") end
 package.preload["actions.url_commands"] = function() return actionStub("url") end
 package.preload["actions.file_name_copy"] = function() return actionStub("file_name_copy") end
@@ -155,6 +156,8 @@ local requiredBindings = {
     action = { type = "ai", promptPath = promptDir .. "review-text_compact.md", model = "gemini-flash-latest", model_failover = "gemini-flash-lite-latest", mode = "replace" } },
   { modifiers = { "cmd", "alt", "shift" }, key = "f",
     action = { type = "two_panes_finder" } },
+  { modifiers = { "cmd", "alt", "shift" }, key = "c",
+    action = { type = "chicago_title_case" } },
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "g",
     action = { type = "url", command = "google" } },
   { modifiers = { "cmd", "alt", "shift" }, key = "j",
@@ -176,7 +179,7 @@ local function actionArguments(action)
   if action.type == "ai" then return { action.promptPath, action.model, action.mode, action.model_failover } end
   if action.type == "app" then return { action.app } end
   if action.type == "window" or action.type == "url" then return { action.command } end
-  if action.type == "two_panes_finder" then return {} end
+  if action.type == "two_panes_finder" or action.type == "chicago_title_case" then return {} end
   if action.type == "utility" then return { action.executablePath, action.scriptPath } end
   error("unsupported test action type: " .. tostring(action.type))
 end
