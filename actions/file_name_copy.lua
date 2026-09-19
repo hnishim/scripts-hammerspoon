@@ -322,9 +322,9 @@ local function isExplorerContainer(element, diagnostic)
   end
   if diagnostic and (diagnostic.ancestor_role == nil or matched) then
     diagnostic.ancestor_role = "AXOutline"
-    diagnostic.ancestor_title_present = tostring(present.AXTitle ~= nil and present.AXTitle or "not_read")
-    diagnostic.ancestor_description_present = tostring(present.AXDescription ~= nil and present.AXDescription or "not_read")
-    diagnostic.ancestor_identifier_present = tostring(present.AXIdentifier ~= nil and present.AXIdentifier or "not_read")
+    diagnostic.ancestor_title_present = (present.AXTitle == nil and "not_read" or tostring(present.AXTitle))
+    diagnostic.ancestor_description_present = (present.AXDescription == nil and "not_read" or tostring(present.AXDescription))
+    diagnostic.ancestor_identifier_present = (present.AXIdentifier == nil and "not_read" or tostring(present.AXIdentifier))
     diagnostic.ancestor_explorer_match = tostring(matched)
   end
   return matched
