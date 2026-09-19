@@ -10,9 +10,12 @@ local selectionResult = { status = "selected", text = "入力" }
 local promptResult = { status = "cancelled" }
 local promptCallbacks = {}
 local promptStartAllowed = true
+local promptFailureNotifies = false
+local promptLive, promptCloseCalls = false, 0
 local function finishPrompt(result)
   local callback = table.remove(promptCallbacks, 1)
   assert(callback, "pending AI prompt callback exists")
+  promptLive = false
   callback(result)
   return callback
 end
@@ -50,7 +53,8 @@ end
 
 local function resetInputCalls()
   captureCalls, promptCalls, promptCallbacks = {}, {}, {}
-  promptStartAllowed = true
+  promptStartAllowed, promptFailureNotifies = true, false
+  promptLive, promptCloseCalls = false, 0
 end
 
 _G.hs = {
@@ -126,8 +130,21 @@ package.preload["components.text_prompt"] = function()
         if options[key] ~= nil then assertEnglishUI(options[key], "AI prompt " .. key) end
       end
       promptCalls[#promptCalls + 1] = options
+      if not promptStartAllowed then
+        if promptFailureNotifies then callback({ status = "error" }) end
+        return false
+      end
+      assert(not promptLive, "only one live AI form is allowed")
+      promptLive = true
       promptCallbacks[#promptCallbacks + 1] = callback
-      return promptStartAllowed
+      return true
+    end,
+    close = function()
+      if not promptLive then return false end
+      promptCloseCalls = promptCloseCalls + 1
+      promptLive = false
+      table.remove(promptCallbacks, 1)
+      return true
     end,
   }
 end
@@ -297,10 +314,21 @@ do
   assert(ai.run(promptPath, model, "display") ~= false, "pending stop setup")
   assertEqual(#promptCalls, 1, "pending stop creates prompt")
   local staleCallback = promptCallbacks[1]
+  assert(promptLive, "pending stop has a visible live form")
   ai.stop()
+  assertEqual(promptCloseCalls, 1, "stop closes the pending input form")
+  assertEqual(promptLive, false, "stop releases the displayed input")
   staleCallback({ status = "submitted", text = "must not execute" })
   assertEqual(#tasks, beforeTasks, "stopped prompt cannot start credentials")
   assertEqual(#httpRequests, beforeRequests, "stopped prompt cannot start request")
+  assert(ai.run(promptPath, model, "display") ~= false, "new input can start after stop")
+  assertEqual(#promptCalls, 2, "new input creates a new form")
+  assert(promptLive, "new input is live after stop")
+  assertEqual(#tasks, beforeTasks, "new prompt waits for completion")
+  finishPrompt({ status = "submitted", text = "after stop" })
+  completeCredentials(beforeTasks + 1)
+  assertEqual(#httpRequests, beforeRequests + 1, "new input starts one fresh request")
+  httpRequests[#httpRequests].callback(200, "response", "")
 end
 
 -- A second display command cannot initiate a second active prompt while
@@ -312,6 +340,30 @@ do
   ai.run(promptPath, model, "display")
   assertEqual(#promptCalls, 1, "pending input forbids a second prompt")
   finishPrompt({ status = "cancelled" })
+end
+
+-- A failed form startup must release pending/busy state even if the
+-- component reports its error synchronously. The caller must not alert twice.
+-- Also cover a false return without a completion callback defensively.
+for _, notifies in ipairs({ true, false }) do
+  resetInputCalls()
+  selectionResult = { status = "none" }
+  promptStartAllowed, promptFailureNotifies = false, notifies
+  local beforeTasks, beforeRequests, beforeAlerts = #tasks, #httpRequests, #alerts
+  ai.run(promptPath, model, "display")
+  assertEqual(#promptCalls, 1, "failed AI prompt attempted once")
+  assertEqual(promptLive, false, "failed AI prompt is not left visible")
+  assertEqual(#alerts, beforeAlerts + 1, "failed AI startup alerts exactly once")
+  assertEqual(#tasks, beforeTasks, "failed AI startup does not start credentials")
+  assertEqual(#httpRequests, beforeRequests, "failed AI startup does not start network")
+  promptStartAllowed, promptFailureNotifies = true, false
+  assert(ai.run(promptPath, model, "display") ~= false,
+    "AI input can be retried after startup failure")
+  assertEqual(#promptCalls, 2, "retry creates a fresh AI prompt")
+  assert(promptLive, "retry has a live prompt")
+  finishPrompt({ status = "cancelled" })
+  assertEqual(#tasks, beforeTasks, "cancelled retry does not start credentials")
+  assertEqual(#httpRequests, beforeRequests, "cancelled retry does not start network")
 end
 
 for _, message in ipairs(alerts) do assertEnglishUI(message, "AI alert") end
