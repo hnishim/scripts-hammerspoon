@@ -18,6 +18,14 @@ local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
 end
 
+local function assertEnglishUI(value, context)
+  assert(type(value) == "string", context .. " is text")
+  for _, cp in utf8.codes(value) do
+    assert(not ((cp >= 0x3040 and cp <= 0x30ff) or (cp >= 0x3400 and cp <= 0x9fff)),
+      context .. " contains Japanese UI text")
+  end
+end
+
 local function assertURL(expected, message)
   assertEqual(#openedURLs, 1, message .. " opens exactly one URL")
   assertEqual(openedURLs[1], expected, message .. " URL")
@@ -56,6 +64,9 @@ package.preload["components.text_prompt"] = function()
   return {
     request = function(options, callback)
       assert(type(callback) == "function", "manual input is asynchronous")
+      for _, key in ipairs({ "title", "message", "submit", "cancel" }) do
+        if options[key] ~= nil then assertEnglishUI(options[key], "URL prompt " .. key) end
+      end
       promptCalls[#promptCalls + 1] = options
       pendingPromptCallbacks[#pendingPromptCallbacks + 1] = callback
       return promptStarts
@@ -156,4 +167,5 @@ assertEqual(#openedURLs, 0, "dictionary waits for async input")
 finishPrompt({ status = "submitted", text = "a & b" })
 assertURL("mkdictionaries:///?text=a%20%26%20b&category=en-ja&scope=headword", "dictionary async input")
 
+for _, message in ipairs(alerts) do assertEnglishUI(message, "URL alert") end
 print("url_commands_test: ok")
