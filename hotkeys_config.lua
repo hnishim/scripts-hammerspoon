@@ -1,6 +1,5 @@
 local home = os.getenv("HOME") or ""
 local promptDir = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/prompts/ai-commands/"
-local commandsRoot = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/commands/"
 
 -- 複雑なアクションの事前定義
 local actions = {
@@ -42,9 +41,7 @@ local actions = {
   {
     name = "title-case-chicago",
     action = {
-      type = "utility",
-      executablePath = "/bin/bash",
-      scriptPath = commandsRoot .. "title-case-chicago.sh",
+      type = "chicago_title_case",
     },
   },
 }
