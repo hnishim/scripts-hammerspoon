@@ -14,8 +14,11 @@ end
 function M.run()
   generation = generation + 1
   local current = generation
+  local delivered = false
   return textIO.capture("replace", function(result)
-    if current ~= generation or type(result) ~= "table" or result.status ~= "selected"
+    if current ~= generation or delivered then return end
+    delivered = true
+    if type(result) ~= "table" or result.status ~= "selected"
         or type(result.text) ~= "string" or result.text == ""
         or type(result.replace) ~= "function" then return end
 
