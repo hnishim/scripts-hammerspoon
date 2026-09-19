@@ -118,6 +118,21 @@ eq(#views, 1, "one view created")
 assert(views[1].shown, "input view is displayed")
 assert(type(views[1].htmlValue) == "string" and views[1].htmlValue:find("<form", 1, true),
   "input view contains an HTML form")
+-- Enter on the text field and a click on Submit must share the form's
+-- submit event path through the WKWebView message bridge. This checks the
+-- generated HTML contract; real keyboard delivery is a macOS acceptance check.
+local formHTML = views[1].htmlValue
+assert(formHTML:match("<form[^>]*>"), "input has a real HTML form")
+assert(formHTML:match("<input[^>]*>"), "form has a single-line input accepting Enter")
+assert(formHTML:match("<button[^>]*type%s*=%s*['\"]?submit") or
+  formHTML:match("<input[^>]*type%s*=%s*['\"]?submit"),
+  "form has a submit control")
+assert(formHTML:match("addEventListener%s*%(%s*['\"]submit['\"]") or
+  formHTML:match("<form[^>]*onsubmit%s*="),
+  "form submission is handled for both Enter and Submit")
+assert(formHTML:match("postMessage%s*%(") and
+  formHTML:match("action%s*:%s*['\"]submit['\"]"),
+  "form submit sends a submit action through the WebView message bridge")
 eq(results[index], nil, "request does not report success before submission")
 send("submit", "  entered text  ")
 eq(results[index].status, "submitted", "submission status")
