@@ -112,6 +112,7 @@ local function createCanvas(message, animated)
     frame = { x = 0, y = 0, w = frame.w, h = frame.h },
     fillColor = STYLE.backgroundColor,
     roundedRectRadii = { xRadius = STYLE.cornerRadius, yRadius = STYLE.cornerRadius },
+    clipToPath = true,
     withShadow = true,
   })
 
