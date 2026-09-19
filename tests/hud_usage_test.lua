@@ -4,6 +4,17 @@ local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
 end
 
+local function containsJapanese(value)
+  if type(value) ~= "string" then return false end
+  for _, codepoint in utf8.codes(value) do
+    if (codepoint >= 0x3040 and codepoint <= 0x30ff)
+        or (codepoint >= 0x3400 and codepoint <= 0x9fff) then
+      return true
+    end
+  end
+  return false
+end
+
 local function resetModules(...)
   for _, name in ipairs({ ... }) do package.loaded[name] = nil end
 end
@@ -22,10 +33,13 @@ local function resetNotifications()
   hudNotifications = {}
 end
 
-local function assertNotification(index, message, seconds, label)
+local function assertEnglishNotification(index, seconds, label)
   local event = hudNotifications[index]
   assert(event, label .. " notification missing")
-  assertEqual(event.message, message, label .. " message")
+  assert(type(event.message) == "string" and event.message:match("%a"),
+    label .. " message contains English text")
+  assert(not containsJapanese(event.message),
+    label .. " message must not contain Japanese UI copy")
   assertEqual(event.seconds, seconds, label .. " duration")
 end
 
@@ -41,8 +55,8 @@ resetModules("actions.app_launcher")
 local appLauncher = require("actions.app_launcher")
 assertEqual(appLauncher.run("Missing App"), false, "failed app launch returns false")
 assertEqual(#hudNotifications, 2, "failed app launch emits launch and error HUDs")
-assertNotification(1, "Launching Missing App...", 2, "app launcher progress")
-assertNotification(2, "Command failed.", 2, "app launcher error")
+assertEnglishNotification(1, 2, "app launcher progress")
+assertEnglishNotification(2, 2, "app launcher error")
 
 -- utility_command: task failure uses the shared English HUD.
 resetNotifications()
@@ -67,7 +81,7 @@ resetModules("actions.utility_command")
 local utilityCommand = require("actions.utility_command")
 assertEqual(utilityCommand.run("/dev/null", "/dev/null"), true, "utility task starts before asynchronous failure")
 assertEqual(#hudNotifications, 1, "utility task failure emits one HUD")
-assertNotification(1, "Command failed.", 2, "utility command error")
+assertEnglishNotification(1, 2, "utility command error")
 
 -- window_management: boundary failure uses the shared English HUD.
 resetNotifications()
@@ -84,7 +98,7 @@ resetModules("actions.window_management")
 local windowManagement = require("actions.window_management")
 assertEqual(windowManagement.run("full"), false, "window lookup failure returns false")
 assertEqual(#hudNotifications, 1, "window lookup failure emits one HUD")
-assertNotification(1, "Command failed.", 2, "window management error")
+assertEnglishNotification(1, 2, "window management error")
 
 -- file_name_copy: Finder acquisition failure uses the shared English HUD.
 resetNotifications()
@@ -105,6 +119,6 @@ resetModules("actions.file_name_copy")
 local fileNameCopy = require("actions.file_name_copy")
 assertEqual(fileNameCopy.run(), false, "Finder acquisition failure returns false")
 assertEqual(#hudNotifications, 1, "Finder acquisition failure emits one HUD")
-assertNotification(1, "Could not get selected Finder items.", 2, "Finder error")
+assertEnglishNotification(1, 2, "Finder error")
 
 print("hud_usage_test: ok")

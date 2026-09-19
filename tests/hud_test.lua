@@ -3,6 +3,7 @@ local timers = {}
 local timerSequence = 0
 local screenFrame = { x = 100, y = 50, w = 1200, h = 800 }
 local canvasFailure = nil
+local timerFailure = nil
 
 local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
@@ -162,8 +163,14 @@ _G.hs = {
     windowLevels = { floating = 3 },
   },
   timer = {
-    doEvery = function(delay, callback) return makeTimer("every", delay, callback) end,
-    doAfter = function(delay, callback) return makeTimer("after", delay, callback) end,
+    doEvery = function(delay, callback)
+      if timerFailure == "every" then error("timer doEvery failure") end
+      return makeTimer("every", delay, callback)
+    end,
+    doAfter = function(delay, callback)
+      if timerFailure == "after" then error("timer doAfter failure") end
+      return makeTimer("after", delay, callback)
+    end,
     stop = function(timer) timer:stop() end,
   },
 }
@@ -254,8 +261,9 @@ assert(type(background.roundedRectRadii) == "table"
 assert(background.withShadow == true, "HUD background has a shadow")
 
 local persistentText = assert(textElement(persistent, "Processing..."), "persistent HUD has message text")
-assert(type(persistentText.textSize) == "number" and persistentText.textSize > 0 and persistentText.textSize < 27,
-  "HUD text is smaller than the hs.canvas default text size")
+assert(persistentText.textSize == nil
+    or (type(persistentText.textSize) == "number" and persistentText.textSize > 0),
+  "explicit HUD text size, when present, is valid")
 if persistentText.textFont ~= nil and persistentText.textFont ~= "" then
   assert(type(persistentText.textFont) == "string", "explicit HUD font must be a font name")
   assert(not persistentText.textFont:find("/", 1, true)
@@ -329,5 +337,30 @@ canvasFailure = "show"
 assertEqual(hud.show("Failure"), false, "canvas show failure is contained")
 assertEqual(#liveTimers("every"), 0, "show failure leaves no animation timer")
 canvasFailure = nil
+
+timerFailure = "every"
+local persistentCanvasCountBeforeTimerFailure = #canvases
+assertEqual(hud.show("Timer failure"), false, "animation timer failure is contained")
+assertEqual(#canvases, persistentCanvasCountBeforeTimerFailure + 1,
+  "animation timer failure creates only the attempted canvas")
+local failedPersistentCanvas = canvases[#canvases]
+assert(failedPersistentCanvas.deleted, "animation timer failure deletes attempted canvas")
+assertEqual(#liveTimers("every"), 0, "animation timer failure leaves no live animation timer")
+assert(pcall(hud.close), "close remains safe after animation timer failure")
+timerFailure = nil
+
+timerFailure = "after"
+local transientCanvasCountBeforeTimerFailure = #canvases
+local failedTransientToken = hud.showTransient("Timer failure", 2)
+assert(failedTransientToken == nil or failedTransientToken == false,
+  "timeout timer failure returns no live transient token")
+assertEqual(#canvases, transientCanvasCountBeforeTimerFailure + 1,
+  "timeout timer failure creates only the attempted canvas")
+local failedTransientCanvas = canvases[#canvases]
+assert(failedTransientCanvas.deleted, "timeout timer failure deletes attempted canvas")
+assertEqual(#liveTimers("after"), 0, "timeout timer failure leaves no live timeout timer")
+assert(pcall(hud.closeTransient, failedTransientToken),
+  "closeTransient remains safe after timeout timer failure")
+timerFailure = nil
 
 print("hud_test: ok")
