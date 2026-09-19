@@ -245,72 +245,208 @@ local function axPathInSubtree(element, depth)
   return nil
 end
 
-local function selectedExplorerPath(element)
+local function selectedExplorerPath(element, diagnostic)
   for _, attribute in ipairs({ "AXSelectedRows", "AXSelectedChildren" }) do
     local selected = axElements(axAttribute(element, attribute))
     if #selected > 0 then
-      if #selected ~= 1 then return nil end
+      diagnostic.selection_count = #selected
+      if #selected ~= 1 then
+        diagnostic.path_state = "invalid"
+        return nil
+      end
       return axPathInSubtree(selected[1], 0)
     end
   end
+  diagnostic.selection_count = 0
   return nil
 end
 
-local function isExplorerContainer(element)
-  if axAttribute(element, "AXRole") ~= "AXOutline" then return false end
-  for _, attribute in ipairs({ "AXTitle", "AXDescription", "AXIdentifier" }) do
-    local value = axAttribute(element, attribute)
-    if type(value) == "string" and value:lower():find("explorer", 1, true) then
-      return true
-    end
+-- The diagnostic stores only classifications and attribute presence, never AX text or paths.
+local function diagnosticRole(value)
+  if type(value) ~= "string" then return "other" end
+  for _, known in ipairs({ "AXOutline", "AXRow", "AXTextArea", "AXTextField",
+      "AXGroup", "AXWindow" }) do
+    if value == known then return known end
   end
-  return false
+  return "other"
 end
 
-local function isExplorerFocus(element)
+local function diagnosticAppName(name)
+  if type(name) ~= "string" then return "nil" end
+  if #name > 48 or not name:match("^[%w%._ %-]+$") then return "other" end
+  return name:gsub(" ", "_")
+end
+
+local function logCursorFailure(diagnostic)
+  -- Never let an unavailable or throwing logger change the existing error path.
+  pcall(function()
+    if type(hs) ~= "table" or type(hs.logger) ~= "table"
+        or type(hs.logger.new) ~= "function" then return end
+    local logger = hs.logger.new("HIR-279", "warning")
+    if not logger or type(logger.w) ~= "function" then return end
+    local fields = {
+      "issue=HIR-279", "operation=cursor-file-name-copy",
+      "timestamp=" .. os.date("!%Y-%m-%dT%H:%M:%SZ"),
+    }
+    local keys = { "stage", "kind", "frontmost_app", "cursor", "focused_element",
+      "focused_role_state", "focused_role", "explorer", "ancestor_role",
+      "ancestor_title_present", "ancestor_description_present",
+      "ancestor_identifier_present", "ancestor_explorer_match",
+      "selection_count", "path_state", "app_element", "focused_window",
+      "main_window", "window_source", "document_state" }
+    for _, key in ipairs(keys) do
+      local value = diagnostic[key]
+      if value ~= nil then
+        fields[#fields + 1] = key .. "=" .. tostring(value)
+      end
+    end
+    logger:w(table.concat(fields, " "))
+  end)
+end
+
+local function isExplorerContainer(element, diagnostic)
+  local role = axAttribute(element, "AXRole")
+  if role ~= "AXOutline" then return false end
+  -- Retain the first outline classification even when its identifying attributes
+  -- are absent: this distinguishes an unclassified Explorer from another pane.
+  local attributes = { "AXTitle", "AXDescription", "AXIdentifier" }
+  local matched = false
+  local present = {}
+  for _, attribute in ipairs(attributes) do
+    local value = axAttribute(element, attribute)
+    present[attribute] = value ~= nil
+    if type(value) == "string" and value:lower():find("explorer", 1, true) then
+      matched = true
+    end
+  end
+  if diagnostic and (diagnostic.ancestor_role == nil or matched) then
+    diagnostic.ancestor_role = "AXOutline"
+    diagnostic.ancestor_title_present = tostring(present.AXTitle)
+    diagnostic.ancestor_description_present = tostring(present.AXDescription)
+    diagnostic.ancestor_identifier_present = tostring(present.AXIdentifier)
+    diagnostic.ancestor_explorer_match = tostring(matched)
+  end
+  return matched
+end
+
+local function isExplorerFocus(element, diagnostic)
   local current = element
   for _ = 0, 40 do
-    if isExplorerContainer(current) then return true end
+    if isExplorerContainer(current, diagnostic) then return true end
     current = axAttribute(current, "AXParent")
     if not current then return false end
   end
   return false
 end
 
-local function cursorCopyCommand(app)
+local function cursorCopyCommand(app, diagnostic)
   if type(hs) ~= "table" or type(hs.axuielement) ~= "table"
-      or type(hs.axuielement.systemWideElement) ~= "function"
-      or not app then
+      or type(hs.axuielement.systemWideElement) ~= "function" or not app then
+    diagnostic.stage, diagnostic.kind = "system-wide-element", "unavailable"
     return nil
   end
 
   local systemOK, systemWide = pcall(hs.axuielement.systemWideElement)
   if not systemOK or not systemWide or type(systemWide.attributeValue) ~= "function" then
+    diagnostic.stage = "system-wide-element"
+    diagnostic.kind = not systemOK and "exception"
+      or (not systemWide and "nil" or "invalid")
     return nil
   end
   local focusedOK, focused = pcall(systemWide.attributeValue, systemWide, "AXFocusedUIElement")
+  diagnostic.focused_element = tostring(focusedOK and focused ~= nil)
   if not focusedOK or not focused or type(focused.attributeValue) ~= "function" then
+    diagnostic.stage = "focus-query"
+    diagnostic.kind = not focusedOK and "exception"
+      or (not focused and "nil" or "invalid")
     return nil
   end
   local roleOK, role = pcall(focused.attributeValue, focused, "AXRole")
-  if not roleOK then return nil end
+  diagnostic.focused_role_state = not roleOK and "exception"
+    or (role == nil and "nil" or (type(role) ~= "string" and "invalid" or "ok"))
+  diagnostic.focused_role = diagnosticRole(role)
+  if not roleOK then
+    diagnostic.stage, diagnostic.kind = "focused-role", "exception"
+    return nil
+  end
 
-  if (role == "AXOutline" or role == "AXRow") and isExplorerFocus(focused) then
+  diagnostic.explorer = "false"
+  if (role == "AXOutline" or role == "AXRow") and isExplorerFocus(focused, diagnostic) then
+    diagnostic.explorer = "true"
     local expectedPath
     if role == "AXOutline" then
-      expectedPath = selectedExplorerPath(focused)
+      expectedPath = selectedExplorerPath(focused, diagnostic)
     else
+      diagnostic.selection_count = 1
       expectedPath = axPathInSubtree(focused, 0)
     end
-    if not expectedPath then return false end
+    if not expectedPath then
+      diagnostic.stage = "explorer-path"
+      diagnostic.kind = diagnostic.path_state == "invalid" and "invalid" or "nil"
+      diagnostic.path_state = diagnostic.kind
+      return false
+    end
+    diagnostic.path_state = "valid"
     return true, expectedPath
   end
 
-  local appElement = axElementForApp(app)
-  if not appElement then return nil end
-  local window = cursorWindow(appElement)
-  local expectedPath = urlPath(axAttribute(window, "AXDocument"))
-  if not expectedPath then return false end
+  if type(hs.axuielement.applicationElement) ~= "function"
+      or type(app.pid) ~= "function" then
+    diagnostic.stage, diagnostic.kind = "app-element", "unavailable"
+    return nil
+  end
+  local pidOK, pid = pcall(app.pid, app)
+  if not pidOK or type(pid) ~= "number" then
+    diagnostic.stage, diagnostic.kind = "app-element", pidOK and "invalid" or "exception"
+    return nil
+  end
+  local appOK, appElement = pcall(hs.axuielement.applicationElement, pid)
+  diagnostic.app_element = tostring(appOK and appElement ~= nil)
+  if not appOK or not appElement then
+    diagnostic.stage, diagnostic.kind = "app-element", appOK and "nil" or "exception"
+    return nil
+  end
+
+  local window = axAttribute(appElement, "AXFocusedWindow")
+  diagnostic.focused_window = tostring(window ~= nil)
+  if window then
+    diagnostic.window_source = "focused"
+  else
+    window = axAttribute(appElement, "AXMainWindow")
+    diagnostic.main_window = tostring(window ~= nil)
+    if window then
+      diagnostic.window_source = "main"
+    else
+      window = axChildren(appElement)[1]
+      diagnostic.window_source = window and "children" or "none"
+    end
+  end
+  if not window then
+    diagnostic.stage, diagnostic.kind = "window", "nil"
+    return nil
+  end
+  local documentOK, document
+  if type(window.attributeValue) == "function" then
+    documentOK, document = pcall(window.attributeValue, window, "AXDocument")
+  else
+    documentOK, document = true, nil
+  end
+  if not documentOK then
+    diagnostic.stage, diagnostic.kind = "active-document", "exception"
+    diagnostic.document_state = "exception"
+    return false
+  end
+  local expectedPath = urlPath(document)
+  if not expectedPath then
+    diagnostic.stage = "active-document"
+    diagnostic.kind = document == nil and "nil" or "invalid"
+    diagnostic.document_state = document == nil and "nil"
+      or (type(document) ~= "string" and "non-string"
+        or (document:match("^file://") and "invalid-file" or "non-file"))
+    return false
+  end
+  diagnostic.document_state = type(document) == "string"
+    and (document:match("^file://") and "file" or "absolute-path") or "invalid"
   return true, expectedPath
 end
 
@@ -340,13 +476,20 @@ local function runCursor()
     return false
   end
   local app = frontmostApplication()
-  if frontmostName(app) ~= "Cursor" then
+  local name = frontmostName(app)
+  local diagnostic = { frontmost_app = diagnosticAppName(name),
+    cursor = tostring(name == "Cursor") }
+  if name ~= "Cursor" then
+    diagnostic.stage, diagnostic.kind = "frontmost-app",
+      name == nil and "nil" or "mismatch"
+    logCursorFailure(diagnostic)
     alert("Could not get the selected item from Cursor.")
     return false
   end
 
-  local copyOK, expectedPath = cursorCopyCommand(app)
+  local copyOK, expectedPath = cursorCopyCommand(app, diagnostic)
   if not copyOK then
+    logCursorFailure(diagnostic)
     alert("Could not get the selected item from Cursor.")
     return false
   end
