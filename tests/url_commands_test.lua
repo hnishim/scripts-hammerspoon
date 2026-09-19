@@ -6,9 +6,12 @@ local selectionResult = { status = "selected", text = "選択語" }
 local promptResult = { status = "submitted", text = "入力語" }
 local pendingPromptCallbacks = {}
 local promptStarts = true
+local promptFailureNotifies = false
+local promptLive = false
 local function finishPrompt(result)
   local callback = table.remove(pendingPromptCallbacks, 1)
   assert(callback, "manual-input callback is pending")
+  promptLive = false
   callback(result)
   return callback
 end
@@ -33,7 +36,8 @@ end
 
 local function resetCalls()
   alerts, openedURLs, captureCalls, promptCalls, pendingPromptCallbacks = {}, {}, {}, {}, {}
-  openMode, promptStarts = "ok", true
+  openMode, promptStarts, promptFailureNotifies = "ok", true, false
+  promptLive = false
 end
 
 _G.hs = {
@@ -68,8 +72,14 @@ package.preload["components.text_prompt"] = function()
         if options[key] ~= nil then assertEnglishUI(options[key], "URL prompt " .. key) end
       end
       promptCalls[#promptCalls + 1] = options
+      if not promptStarts then
+        if promptFailureNotifies then callback({ status = "error" }) end
+        return false
+      end
+      assert(not promptLive, "only one live URL form is allowed")
+      promptLive = true
       pendingPromptCallbacks[#pendingPromptCallbacks + 1] = callback
-      return promptStarts
+      return true
     end,
   }
 end
@@ -166,6 +176,27 @@ urlCommands.run("dictionary")
 assertEqual(#openedURLs, 0, "dictionary waits for async input")
 finishPrompt({ status = "submitted", text = "a & b" })
 assertURL("mkdictionaries:///?text=a%20%26%20b&category=en-ja&scope=headword", "dictionary async input")
+
+-- A failed WebView startup cannot leave a pending URL form or trigger
+-- any URL. Whether the component reports a synchronous error callback or
+-- only a false return, the command owns one error notification and can retry.
+for _, notifies in ipairs({ true, false }) do
+  resetCalls()
+  selectionResult = { status = "none" }
+  promptStarts, promptFailureNotifies = false, notifies
+  urlCommands.run("google")
+  assertEqual(#promptCalls, 1, "failed URL prompt attempted once")
+  assertEqual(promptLive, false, "failed URL prompt is not left visible")
+  assertEqual(#alerts, 1, "failed URL startup alerts exactly once")
+  assertEqual(#openedURLs, 0, "failed URL startup has no external effect")
+  promptStarts, promptFailureNotifies = true, false
+  assert(urlCommands.run("google") ~= false, "URL input can retry after startup failure")
+  assertEqual(#promptCalls, 2, "retry creates a new URL input")
+  assert(promptLive, "retry has a live URL form")
+  assertEqual(#openedURLs, 0, "retry still waits for user input")
+  finishPrompt({ status = "submitted", text = "after error" })
+  assertURL("https://www.google.com/search?q=after%20error", "URL retry")
+end
 
 for _, message in ipairs(alerts) do assertEnglishUI(message, "URL alert") end
 print("url_commands_test: ok")
