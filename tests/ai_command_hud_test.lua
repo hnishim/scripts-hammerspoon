@@ -22,6 +22,14 @@ local function assertEqual(actual, expected, message)
   assert(actual == expected, string.format("%s: expected %s, got %s", message, tostring(expected), tostring(actual)))
 end
 
+local function assertEnglishUI(value, context)
+  assert(type(value) == "string", context .. " is text")
+  for _, cp in utf8.codes(value) do
+    assert(not ((cp >= 0x3040 and cp <= 0x30ff) or (cp >= 0x3400 and cp <= 0x9fff)),
+      context .. " contains Japanese UI text")
+  end
+end
+
 local function liveTimers()
   local count = 0
   for _, timer in ipairs(timers) do if not timer.stopped then count = count + 1 end end
@@ -114,6 +122,9 @@ package.preload["components.text_prompt"] = function()
   return {
     request = function(options, callback)
       assert(type(callback) == "function", "prompt accepts completion callback")
+      for _, key in ipairs({ "title", "message", "submit", "cancel" }) do
+        if options[key] ~= nil then assertEnglishUI(options[key], "AI prompt " .. key) end
+      end
       promptCalls[#promptCalls + 1] = options
       promptCallbacks[#promptCallbacks + 1] = callback
       return promptStartAllowed
@@ -303,4 +314,6 @@ do
   finishPrompt({ status = "cancelled" })
 end
 
+for _, message in ipairs(alerts) do assertEnglishUI(message, "AI alert") end
+for _, event in ipairs(hudEvents) do assertEnglishUI(event, "AI HUD") end
 print("ai_command_hud_test: ok")
