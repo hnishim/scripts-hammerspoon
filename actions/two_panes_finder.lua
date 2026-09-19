@@ -2,10 +2,10 @@ local M = {}
 
 local RETRY_DELAY_SECONDS = 0.05
 local MAX_RETRY_COUNT = 20
-local MAX_READBACK_COUNT = 5
+local READBACK_DELAYS = { 0.1, 0.2, 0.4, 0.8, 1.2 }
+local MAX_READBACK_COUNT = #READBACK_DELAYS
 local retryTimer
 local readbackTimer
-local finderWindowFilter
 
 local function showError()
   if type(hs) == "table" and type(hs.alert) == "table" and type(hs.alert.show) == "function" then
@@ -47,24 +47,27 @@ local function frameForScreen(screen)
   return frame
 end
 
-local function mainScreen()
+local function mainScreenFrame()
   if type(hs) ~= "table" or type(hs.screen) ~= "table" or type(hs.screen.mainScreen) ~= "function" then
     return nil
   end
   local ok, screen = pcall(hs.screen.mainScreen)
-  if not ok or not screen or not frameForScreen(screen) then return nil end
-  return screen
+  if not ok then return nil end
+  return frameForScreen(screen)
 end
 
-local function targetScreen()
+local function targetScreenFrame()
   if type(hs) == "table" and type(hs.window) == "table" and type(hs.window.frontmostWindow) == "function" then
     local windowOK, window = pcall(hs.window.frontmostWindow)
     if windowOK and window and type(window.screen) == "function" then
       local screenOK, screen = pcall(window.screen, window)
-      if screenOK and screen and frameForScreen(screen) then return screen end
+      if screenOK then
+        local frame = frameForScreen(screen)
+        if frame then return frame end
+      end
     end
   end
-  return mainScreen()
+  return mainScreenFrame()
 end
 
 local function paneFrames(frame)
@@ -82,32 +85,6 @@ local function paneFrames(frame)
   }
 end
 
-local function createFinderWindowFilter()
-  if type(hs) ~= "table" or type(hs.window) ~= "table"
-      or type(hs.window.filter) ~= "table" or type(hs.window.filter.new) ~= "function" then
-    return nil
-  end
-
-  local filterOK, filter = pcall(hs.window.filter.new, false)
-  if not filterOK or not filter or type(filter.setAppFilter) ~= "function" or type(filter.getWindows) ~= "function" then
-    return nil
-  end
-
-  local appFilterOK = pcall(filter.setAppFilter, filter, "Finder", {})
-  if not appFilterOK then return nil end
-  return filter
-end
-
-finderWindowFilter = createFinderWindowFilter()
-
-local function finderWindows()
-  if not finderWindowFilter or type(finderWindowFilter.getWindows) ~= "function" then return nil end
-  local sortOrder = hs.window.filter.sortByCreated
-  local windowsOK, windows = pcall(finderWindowFilter.getWindows, finderWindowFilter, sortOrder)
-  if not windowsOK or type(windows) ~= "table" then return nil end
-  return windows
-end
-
 local function finderApplication()
   if type(hs) ~= "table" or type(hs.application) ~= "table" then return nil end
   if type(hs.application.get) == "function" then
@@ -121,11 +98,92 @@ local function finderApplication()
   return nil
 end
 
-local function activateFinder()
+local function isStandardFinderWindow(window)
+  if not window then return false end
+  if type(window.role) == "function" then
+    local ok, role = pcall(window.role, window)
+    if ok and role and role ~= "AXWindow" then return false end
+  end
+  if type(window.subrole) == "function" then
+    local ok, subrole = pcall(window.subrole, window)
+    if ok and subrole and subrole ~= "AXStandardWindow" then return false end
+  end
+  return true
+end
+
+local function finderWindowsFromFilter()
+  if type(hs) ~= "table" or type(hs.window) ~= "table"
+      or type(hs.window.filter) ~= "table" or type(hs.window.filter.new) ~= "function" then
+    return nil
+  end
+  local filterOK, filter = pcall(hs.window.filter.new, false)
+  if not filterOK or not filter or type(filter.setAppFilter) ~= "function" or type(filter.getWindows) ~= "function" then
+    return nil
+  end
+  if not pcall(filter.setAppFilter, filter, "Finder", {}) then return nil end
+  local sortOrder = hs.window.filter.sortByCreated
+  local windowsOK, windows = pcall(filter.getWindows, filter, sortOrder)
+  if not windowsOK or type(windows) ~= "table" then return nil end
+  return windows
+end
+
+local function finderWindows()
   local app = finderApplication()
+  if not app then return nil, nil, "not-running" end
+  if type(app.allWindows) ~= "function" then return nil, nil, "enumeration-failed" end
+  local windowsOK, allWindows = pcall(app.allWindows, app)
+  if windowsOK and type(allWindows) == "table" then
+    local windows = {}
+    for _, window in ipairs(allWindows) do
+      if isStandardFinderWindow(window) then windows[#windows + 1] = window end
+    end
+    return windows, app, nil
+  end
+  local fallback = finderWindowsFromFilter()
+  if fallback then return fallback, app, nil end
+  return nil, nil, "enumeration-failed"
+end
+
+local function finderIsFrontmost()
+  if type(hs) ~= "table" or type(hs.application) ~= "table"
+      or type(hs.application.frontmostApplication) ~= "function" then
+    return true
+  end
+  local ok, app = pcall(hs.application.frontmostApplication)
+  if not ok or not app then return false end
+  if type(app.name) == "function" then
+    local nameOK, name = pcall(app.name, app)
+    if nameOK and name then return name == "Finder" end
+  end
+  if type(app.bundleID) == "function" then
+    local bundleOK, bundleID = pcall(app.bundleID, app)
+    if bundleOK and bundleID then return bundleID == "com.apple.finder" end
+  end
+  return false
+end
+
+local function launchFinder()
+  if type(hs) ~= "table" or type(hs.application) ~= "table" then return false end
+  if type(hs.application.launchOrFocus) == "function" then
+    local ok, result = pcall(hs.application.launchOrFocus, "Finder")
+    return ok and result ~= false
+  end
+  if type(hs.application.open) == "function" then
+    local ok, result = pcall(hs.application.open, "Finder")
+    return ok and result ~= false
+  end
+  return false
+end
+
+local function activateFinder(app, window)
+  app = app or finderApplication()
   if app and type(app.activate) == "function" then
     local ok, result = pcall(app.activate, app, true)
-    return ok and result ~= false
+    if ok and result ~= false then
+      if window and type(window.focus) == "function" then pcall(window.focus, window) end
+      local focusedOK, focusedResult = pcall(app.activate, app, true)
+      return focusedOK and focusedResult ~= false
+    end
   end
 
   if type(hs) == "table" and type(hs.application) == "table"
@@ -134,48 +192,6 @@ local function activateFinder()
     return ok and result ~= false
   end
   return false
-end
-
-local function finderIsFrontmost()
-  if type(hs) ~= "table" or type(hs.application) ~= "table"
-      or type(hs.application.frontmostApplication) ~= "function" then
-    return nil
-  end
-
-  local appOK, app = pcall(hs.application.frontmostApplication)
-  if not appOK or not app or type(app.name) ~= "function" then return nil end
-  local nameOK, name = pcall(app.name, app)
-  if not nameOK then return nil end
-  return name == "Finder"
-end
-
-local function screenMatchesTarget(window, screen)
-  if not window or type(window.screen) ~= "function" then return true end
-  local windowScreenOK, windowScreen = pcall(window.screen, window)
-  if not windowScreenOK or not windowScreen then return false end
-  local windowFrame = frameForScreen(windowScreen)
-  local targetFrame = frameForScreen(screen)
-  return windowFrame ~= nil and targetFrame ~= nil and frameMatches(windowFrame, targetFrame)
-end
-
-local function moveWindowToTargetScreen(window, screen)
-  if not window or not screen or type(window.moveToScreen) ~= "function" then return true end
-  if screenMatchesTarget(window, screen) then return true end
-
-  local ok, result = pcall(window.moveToScreen, window, screen, true, true, 0)
-  return ok and result ~= false
-end
-
-local function raiseWindow(window)
-  if not window or type(window.raise) ~= "function" then return true end
-  local ok, result = pcall(window.raise, window)
-  return ok and result ~= false
-end
-
-local function bringFinderForward(left, right)
-  if not raiseWindow(left) then return false end
-  if not raiseWindow(right) then return false end
-  return activateFinder()
 end
 
 local function stopTimer(timer)
@@ -193,97 +209,89 @@ local function stopReadbackTimer()
   stopTimer(timer)
 end
 
-local function placeWindowFrames(left, right, screen)
-  if not left or not right or not screen then return nil, nil end
-  if type(left.setFrame) ~= "function" or type(right.setFrame) ~= "function" then return nil, nil end
-
-  local screenFrame = frameForScreen(screen)
-  if not screenFrame then return nil, nil end
-  local leftTarget, rightTarget = paneFrames(screenFrame)
-
-  if not moveWindowToTargetScreen(left, screen) then return nil, nil end
-  if not moveWindowToTargetScreen(right, screen) then return nil, nil end
-
-  local leftOK, leftResult = pcall(left.setFrame, left, leftTarget, 0)
-  if not leftOK or leftResult == false then return nil, nil end
-  local rightOK, rightResult = pcall(right.setFrame, right, rightTarget, 0)
-  if not rightOK or rightResult == false then return nil, nil end
-
-  return leftTarget, rightTarget
+local function windowScreenFrame(window)
+  if not window or type(window.screen) ~= "function" then return nil end
+  local screenOK, screen = pcall(window.screen, window)
+  if not screenOK then return nil end
+  return frameForScreen(screen)
 end
 
-local function placementMatches(left, right, screen, leftTarget, rightTarget)
-  if type(left.frame) ~= "function" or type(right.frame) ~= "function" then return true end
-
-  local leftOK, leftFrame = pcall(left.frame, left)
-  local rightOK, rightFrame = pcall(right.frame, right)
-  if not leftOK or not rightOK
-      or not frameMatches(leftFrame, leftTarget)
-      or not frameMatches(rightFrame, rightTarget) then
-    return false
+local function transitFrame(window, screenFrame)
+  local current = nil
+  if window and type(window.frame) == "function" then
+    local frameOK, frame = pcall(window.frame, window)
+    if frameOK and validFrame(frame) then current = frame end
   end
-
-  if not screenMatchesTarget(left, screen) or not screenMatchesTarget(right, screen) then return false end
-
-  local frontmost = finderIsFrontmost()
-  return frontmost ~= false
+  local width = current and math.min(current.w, screenFrame.w) or math.min(800, screenFrame.w)
+  local height = current and math.min(current.h, screenFrame.h) or math.min(600, screenFrame.h)
+  return {
+    x = screenFrame.x,
+    y = screenFrame.y,
+    w = math.max(1, width),
+    h = math.max(1, height),
+  }
 end
 
-local schedulePlacementReadback
+local function moveToTargetScreen(window, screenFrame)
+  if not window or type(window.setFrame) ~= "function" then return false end
+  local currentScreenFrame = windowScreenFrame(window)
+  if currentScreenFrame then
+    if frameMatches(currentScreenFrame, screenFrame) then return true end
+    local transit = transitFrame(window, screenFrame)
+    local transitOK, transitResult = pcall(window.setFrame, window, transit, 0)
+    return transitOK and transitResult ~= false
+  end
+  return true
+end
 
-schedulePlacementReadback = function(left, right, screen, leftTarget, rightTarget, attempt)
+local function schedulePlacementReadback(app, left, right, leftTarget, rightTarget, attempt)
   if type(left.frame) ~= "function" or type(right.frame) ~= "function" then return true end
   if type(hs) ~= "table" or type(hs.timer) ~= "table" or type(hs.timer.doAfter) ~= "function" then
     return false
   end
 
-  local delay = attempt == 1 and 0.05 or 0.1
+  local delay = READBACK_DELAYS[attempt] or READBACK_DELAYS[#READBACK_DELAYS]
   local timerOK, timer = pcall(hs.timer.doAfter, delay, function()
     readbackTimer = nil
-
-    local currentScreenFrame = frameForScreen(screen)
-    if not currentScreenFrame then
-      screen = mainScreen()
-      currentScreenFrame = frameForScreen(screen)
-    end
-    if not screen or not currentScreenFrame then
-      showError()
+    local leftOK, leftFrame = pcall(left.frame, left)
+    local rightOK, rightFrame = pcall(right.frame, right)
+    if leftOK and rightOK and frameMatches(leftFrame, leftTarget) and frameMatches(rightFrame, rightTarget)
+        and finderIsFrontmost() then
       return
     end
-
-    local currentLeftTarget, currentRightTarget = paneFrames(currentScreenFrame)
-    if placementMatches(left, right, screen, currentLeftTarget, currentRightTarget) then return end
-
     if attempt >= MAX_READBACK_COUNT then
       showError()
       return
     end
-
-    local reappliedLeft, reappliedRight = placeWindowFrames(left, right, screen)
-    if not reappliedLeft or not reappliedRight or not bringFinderForward(left, right) then
-      showError()
-      return
-    end
-
-    if not schedulePlacementReadback(
-        left, right, screen, reappliedLeft, reappliedRight, attempt + 1) then
-      showError()
-    end
+    activateFinder(app, left)
+    if not schedulePlacementReadback(app, left, right, leftTarget, rightTarget, attempt + 1) then showError() end
   end)
   if not timerOK or not timer then return false end
   readbackTimer = timer
   return true
 end
 
-local function placeWindows(windows, screen)
-  if #windows < 2 or not screen then return false end
+local function placeWindows(app, windows, screenFrame)
+  if #windows < 2 then return false end
+  local leftFrame, rightFrame = paneFrames(screenFrame)
   local left, right = windows[1], windows[2]
+  if not left or not right or type(left.setFrame) ~= "function" or type(right.setFrame) ~= "function" then
+    return false
+  end
 
-  local leftTarget, rightTarget = placeWindowFrames(left, right, screen)
-  if not leftTarget or not rightTarget then return false end
+  -- Moving and resizing across displays in one AX operation can preserve the
+  -- source display's maximum height. Move each window first, then resize it.
+  if not moveToTargetScreen(left, screenFrame) or not moveToTargetScreen(right, screenFrame) then
+    return false
+  end
 
-  if not schedulePlacementReadback(left, right, screen, leftTarget, rightTarget, 1) then return false end
-  return bringFinderForward(left, right)
+  local leftOK, leftResult = pcall(left.setFrame, left, leftFrame, 0)
+  if not leftOK or leftResult == false then return false end
+  local rightOK, rightResult = pcall(right.setFrame, right, rightFrame, 0)
+  if not rightOK or rightResult == false then return false end
+  if not activateFinder(app, left) then return false end
+  if not schedulePlacementReadback(app, left, right, leftFrame, rightFrame, 1) then return false end
+  return true
 end
 
 local function closeExtraWindows(windows)
@@ -296,9 +304,9 @@ local function closeExtraWindows(windows)
   return true
 end
 
-local function normalizeAndPlace(windows, screen)
+local function normalizeAndPlace(app, windows, screenFrame)
   if #windows > 2 and not closeExtraWindows(windows) then return false end
-  return placeWindows(windows, screen)
+  return placeWindows(app, windows, screenFrame)
 end
 
 local function createFinderWindow()
@@ -321,7 +329,7 @@ local function stopRetryTimer()
   stopTimer(timer)
 end
 
-local function scheduleRetry(screen, retriesRemaining)
+local function scheduleRetry(screenFrame, retriesRemaining)
   if retriesRemaining <= 0 then return fail() end
   if type(hs) ~= "table" or type(hs.timer) ~= "table" or type(hs.timer.doAfter) ~= "function" then
     return fail()
@@ -330,20 +338,31 @@ local function scheduleRetry(screen, retriesRemaining)
   local callback
   callback = function()
     retryTimer = nil
-    local windows = finderWindows()
+    local windows, app, reason = finderWindows()
     if not windows then
-      fail()
+      if reason == "not-running" and retriesRemaining > 1 then
+        scheduleRetry(screenFrame, retriesRemaining - 1)
+      else
+        fail()
+      end
       return
     end
     if #windows >= 2 then
-      if not normalizeAndPlace(windows, screen) then fail() end
+      if not normalizeAndPlace(app, windows, screenFrame) then fail() end
       return
+    end
+    local missingCount = 2 - #windows
+    for _ = 1, missingCount do
+      if not createFinderWindow() then
+        fail()
+        return
+      end
     end
     if retriesRemaining <= 1 then
       fail()
       return
     end
-    scheduleRetry(screen, retriesRemaining - 1)
+    scheduleRetry(screenFrame, retriesRemaining - 1)
   end
 
   local timerOK, timer = pcall(hs.timer.doAfter, RETRY_DELAY_SECONDS, callback)
@@ -360,14 +379,17 @@ end
 function M.run()
   M.stop()
 
-  local screen = targetScreen()
-  if not screen then return fail() end
+  local screenFrame = targetScreenFrame()
+  if not screenFrame then return fail() end
 
-  local windows = finderWindows()
-  if not windows then return fail() end
+  local windows, app, reason = finderWindows()
+  if not windows then
+    if reason ~= "not-running" or not launchFinder() then return fail() end
+    return scheduleRetry(screenFrame, MAX_RETRY_COUNT)
+  end
 
   if #windows >= 2 then
-    if not normalizeAndPlace(windows, screen) then return fail() end
+    if not normalizeAndPlace(app, windows, screenFrame) then return fail() end
     return true
   end
 
@@ -376,7 +398,7 @@ function M.run()
     if not createFinderWindow() then return fail() end
   end
 
-  return scheduleRetry(screen, MAX_RETRY_COUNT)
+  return scheduleRetry(screenFrame, MAX_RETRY_COUNT)
 end
 
 return M
