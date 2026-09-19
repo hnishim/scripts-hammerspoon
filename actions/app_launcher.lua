@@ -3,9 +3,7 @@ local hud = require("components.hud")
 local M = {}
 
 local function showError()
-  if hs.alert and hs.alert.show then
-    pcall(hs.alert.show, "コマンドを実行できませんでした。", 2)
-  end
+  pcall(hud.showTransient, "Command failed.", 2)
 end
 
 function M.run(app)

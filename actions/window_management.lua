@@ -1,4 +1,5 @@
 local M = {}
+local hud = require("components.hud")
 
 local mimiState = { direction = nil, cycle = 0 }
 local pendingReadbackTimer
@@ -12,7 +13,7 @@ local layoutDefinitions = {
 }
 
 local function showError()
-  if hs.alert and hs.alert.show then pcall(hs.alert.show, "コマンドを実行できませんでした。", 2) end
+  pcall(hud.showTransient, "Command failed.", 2)
 end
 local function cancelReadback()
   if not pendingReadbackTimer then return end
