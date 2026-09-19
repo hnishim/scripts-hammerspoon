@@ -779,6 +779,79 @@ diagnosticCase("non-Explorer outline is classified as fallback", {
   stage = "active-document", kind = "nil", extras = { "explorer=false" },
 })
 
+-- A missing or unsuitable role does not silently become a valid Explorer classification.
+-- The subsequent missing document remains the terminal failure, with the role state retained.
+for _, roleCase in ipairs({
+  { label = "nil", role = nil },
+  { label = "invalid", role = 12 },
+}) do
+  diagnosticCase("focused role " .. roleCase.label .. " then missing document", {
+    mutateAX = function(model)
+      local focusAttribute = model.focused.attributeValue
+      model.focused.attributeValue = function(self, attribute)
+        if attribute == "AXRole" then return roleCase.role end
+        return focusAttribute(self, attribute)
+      end
+      local window = model.appElement:attributeValue("AXFocusedWindow")
+      local windowAttribute = window.attributeValue
+      window.attributeValue = function(self, attribute)
+        if attribute == "AXDocument" then return nil end
+        return windowAttribute(self, attribute)
+      end
+    end,
+    stage = "active-document", kind = "nil",
+    extras = { "focused_role_state=" .. roleCase.label, "explorer=false", "document_state=nil" },
+  })
+end
+
+-- An AXOutline ancestor with absent identifying attributes must be distinct from a true non-Explorer.
+diagnosticCase("Explorer outline lacks identifying attributes and fallback document", {
+  focus = "explorer-file",
+  mutateAX = function(model)
+    local unclassifiedOutline = makeAXElement({ AXRole = "AXOutline" })
+    local focusedAttribute = model.focused.attributeValue
+    model.focused.attributeValue = function(self, attribute)
+      if attribute == "AXParent" then return unclassifiedOutline end
+      return focusedAttribute(self, attribute)
+    end
+    local window = model.appElement:attributeValue("AXFocusedWindow")
+    local windowAttribute = window.attributeValue
+    window.attributeValue = function(self, attribute)
+      if attribute == "AXDocument" then return nil end
+      return windowAttribute(self, attribute)
+    end
+  end,
+  stage = "active-document", kind = "nil",
+  extras = {
+    "focused_role=AXRow", "explorer=false", "ancestor_role=AXOutline",
+    "ancestor_title_present=false", "ancestor_description_present=false",
+    "ancestor_identifier_present=false", "ancestor_explorer_match=false",
+    "document_state=nil",
+  },
+})
+
+-- FocusedWindow missing while MainWindow exists must preserve the selected fallback source.
+diagnosticCase("main window fallback still has no document", {
+  mutateAX = function(model)
+    local appAttribute = model.appElement.attributeValue
+    model.appElement.attributeValue = function(self, attribute)
+      if attribute == "AXFocusedWindow" then return nil end
+      return appAttribute(self, attribute)
+    end
+    local window = model.appElement:attributeValue("AXMainWindow")
+    local windowAttribute = window.attributeValue
+    window.attributeValue = function(self, attribute)
+      if attribute == "AXDocument" then return nil end
+      return windowAttribute(self, attribute)
+    end
+  end,
+  stage = "active-document", kind = "nil",
+  extras = {
+    "focused_window=false", "main_window=true", "window_source=main",
+    "document_state=nil",
+  },
+})
+
 -- An absent/failing logger must never interfere with error presentation or clipboard safety.
 resetClipboard()
 frontmostName = "Cursor"
