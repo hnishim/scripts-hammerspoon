@@ -8,6 +8,14 @@ local captureCalls = {}
 local promptCalls = {}
 local selectionResult = { status = "selected", text = "入力" }
 local promptResult = { status = "cancelled" }
+local promptCallbacks = {}
+local promptStartAllowed = true
+local function finishPrompt(result)
+  local callback = table.remove(promptCallbacks, 1)
+  assert(callback, "pending AI prompt callback exists")
+  callback(result)
+  return callback
+end
 local taskSequence = 0
 
 local function assertEqual(actual, expected, message)
@@ -33,7 +41,8 @@ local function fireLatestTimer()
 end
 
 local function resetInputCalls()
-  captureCalls, promptCalls = {}, {}
+  captureCalls, promptCalls, promptCallbacks = {}, {}, {}
+  promptStartAllowed = true
 end
 
 _G.hs = {
@@ -103,9 +112,11 @@ package.preload["components.text_io"] = function()
 end
 package.preload["components.text_prompt"] = function()
   return {
-    request = function(options)
+    request = function(options, callback)
+      assert(type(callback) == "function", "prompt accepts completion callback")
       promptCalls[#promptCalls + 1] = options
-      return promptResult
+      promptCallbacks[#promptCallbacks + 1] = callback
+      return promptStartAllowed
     end,
   }
 end
@@ -156,6 +167,9 @@ do
   assert(ai.run(promptPath, model, "display") ~= false, "manual-input display starts")
   assertEqual(#captureCalls, 1, "manual-input display performs one capture")
   assertEqual(#promptCalls, 1, "no selection prompts exactly once")
+  assertEqual(#tasks, beforeTasks, "pending input cannot start credential lookup")
+  assertEqual(#httpRequests, beforeRequests, "pending input cannot start network requests")
+  local manualCallback = finishPrompt(promptResult)
   completeCredentials(beforeTasks + 1)
   assertEqual(#httpRequests, beforeRequests + 1, "manual input starts one HTTP request")
   local request = httpRequests[#httpRequests]
@@ -172,6 +186,9 @@ do
   local beforeAlerts = #alerts
   ai.run(promptPath, model, "display")
   assertEqual(#promptCalls, 1, "cancel prompts once")
+  assertEqual(#tasks, beforeTasks, "pending input starts no credentials task")
+  local cancelledCallback = finishPrompt(promptResult)
+  cancelledCallback({ status = "submitted", text = "stale" })
   assertEqual(#tasks, beforeTasks, "cancel starts no credentials task")
   assertEqual(#alerts, beforeAlerts, "cancel does not alert")
 end
@@ -183,6 +200,8 @@ do
   local beforeTasks = #tasks
   local beforeAlerts = #alerts
   ai.run(promptPath, model, "display")
+  assertEqual(#tasks, beforeTasks, "pending empty input starts no credentials task")
+  finishPrompt(promptResult)
   assertEqual(#tasks, beforeTasks, "empty input starts no credentials task")
   assertEqual(#alerts, beforeAlerts + 1, "empty input alerts once")
 end
@@ -194,6 +213,8 @@ do
   local beforeTasks = #tasks
   local beforeAlerts = #alerts
   ai.run(promptPath, model, "display")
+  assertEqual(#tasks, beforeTasks, "pending API error starts no credentials task")
+  finishPrompt(promptResult)
   assertEqual(#tasks, beforeTasks, "prompt API error starts no credentials task")
   assertEqual(#alerts, beforeAlerts + 1, "prompt API error alerts once")
 end
@@ -253,6 +274,33 @@ do
   ai.run("./tests/fixtures/missing-ai-prompt.md", model, "display")
   assertEqual(#tasks, beforeTasks, "missing prompt starts no task")
   assertEqual(#alerts, beforeAlerts + 1, "missing prompt shows a safe error")
+end
+
+
+-- stop invalidates an outstanding manual-input completion and does not allow
+-- an old form to start a credential or network operation after cancellation.
+do
+  resetInputCalls()
+  selectionResult = { status = "none" }
+  local beforeTasks, beforeRequests = #tasks, #httpRequests
+  assert(ai.run(promptPath, model, "display") ~= false, "pending stop setup")
+  assertEqual(#promptCalls, 1, "pending stop creates prompt")
+  local staleCallback = promptCallbacks[1]
+  ai.stop()
+  staleCallback({ status = "submitted", text = "must not execute" })
+  assertEqual(#tasks, beforeTasks, "stopped prompt cannot start credentials")
+  assertEqual(#httpRequests, beforeRequests, "stopped prompt cannot start request")
+end
+
+-- A second display command cannot initiate a second active prompt while
+-- waiting for user input; cancellation releases the pending state.
+do
+  resetInputCalls()
+  selectionResult = { status = "none" }
+  assert(ai.run(promptPath, model, "display") ~= false, "first pending prompt starts")
+  ai.run(promptPath, model, "display")
+  assertEqual(#promptCalls, 1, "pending input forbids a second prompt")
+  finishPrompt({ status = "cancelled" })
 end
 
 print("ai_command_hud_test: ok")
