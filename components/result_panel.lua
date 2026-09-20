@@ -111,6 +111,32 @@ local function screenFrame()
   return frame
 end
 
+local function focusPanel(panel)
+  if currentPanel ~= panel or not panel.active or not panel.view then return false end
+  local broughtForward = invoke(panel.view, "bringToFront", false)
+  local focusedWindow = false
+  if type(panel.view.hswindow) == "function" then
+    local windowOK, window = pcall(panel.view.hswindow, panel.view)
+    if windowOK and window and type(window.focus) == "function" then
+      local focusOK, result = pcall(window.focus, window)
+      focusedWindow = focusOK and result ~= false
+    end
+  end
+  return broughtForward or focusedWindow
+end
+
+local function showPanel(panel)
+  if currentPanel ~= panel or not panel.active or not panel.view then return false end
+  if panel.shown then return focusPanel(panel) end
+  if not invokeChain(panel.view, "show") then
+    cleanup(panel)
+    return false
+  end
+  panel.shown = true
+  focusPanel(panel)
+  return true
+end
+
 local function createView(frame, panel, html)
   if not hs.webview or type(hs.webview.new) ~= "function" then return false end
   local newOK, view = pcall(hs.webview.new, frame)
@@ -129,9 +155,17 @@ local function createView(frame, panel, html)
       -- callback shape accepted by the component tests for compatibility.
       windowCallback(panel, action, focused == nil and webview or focused)
     end)
-    and invokeChain(view, "html", html)
-    and invokeChain(view, "show")
-  return configured
+  if not configured then return false end
+
+  panel.waitsForNavigation = invokeChain(view, "navigationCallback", function(action)
+    if action == "didFinishNavigation" or action == "didFailNavigation"
+        or action == "didFailProvisionalNavigation" then
+      panel.navigationFinished = true
+      if currentPanel == panel then showPanel(panel) end
+    end
+  end)
+  if not invokeChain(view, "html", html) then return false end
+  return true
 end
 
 function M.show(content)
@@ -150,6 +184,7 @@ function M.show(content)
   local panel = {
     active = true,
     content = content,
+    shown = false,
     monitorActive = false,
     monitorStopOK = true,
     tapDeleteOK = true,
@@ -182,6 +217,9 @@ function M.show(content)
   end
   panel.tap = tap
   currentPanel = panel
+  if not panel.waitsForNavigation or panel.navigationFinished then
+    return showPanel(panel)
+  end
   return true
 end
 

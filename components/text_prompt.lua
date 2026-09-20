@@ -126,8 +126,24 @@ local function focusInput(form)
   return broughtForward or focusedWindow or focusedField
 end
 
+local function showView(form)
+  if current ~= form or not form.active or not form.view then return false end
+  if form.shown then return focusInput(form) end
+  if not call(form.view, "show") then
+    fail(form)
+    return false
+  end
+  form.shown = true
+  focusInput(form)
+  return true
+end
+
 local function handleNavigation(form, action)
-  if action == "didFinishNavigation" then focusInput(form) end
+  if action == "didFinishNavigation" or action == "didFailNavigation"
+      or action == "didFailProvisionalNavigation" then
+    form.navigationFinished = true
+    if current == form then showView(form) end
+  end
 end
 
 local function html(options)
@@ -202,11 +218,10 @@ function M.request(options, callback)
     and call(view, "windowCallback", function(action, webview, focused)
       onWindow(form, action, focused == nil and webview or focused)
     end)
-    and call(view, "html", html(options))
   if not configured then return fail(form) end
   -- Optional on older Hammerspoon builds; when available this runs after the
-  -- HTML has loaded, which is more reliable than the input autofocus alone.
-  call(view, "navigationCallback", function(action)
+  -- HTML has loaded, which avoids showing a title bar before the page surface.
+  form.waitsForNavigation = call(view, "navigationCallback", function(action)
     handleNavigation(form, action)
   end)
   local tapOK, tap = pcall(hs.eventtap.new, { hs.eventtap.event.types.keyDown },
@@ -214,10 +229,11 @@ function M.request(options, callback)
   if not tapOK or not tap then return fail(form) end
   form.tap = tap
   current = form
-  -- The focus callback may run synchronously during show; monitoring must
-  -- already be installed and this form must be current before it can fire.
-  if not call(view, "show") then return fail(form) end
-  focusInput(form)
+  -- Load the page before displaying the native window. If the navigation
+  -- callback is unavailable, the native window is shown as a compatibility
+  -- fallback after the HTML has been accepted.
+  if not call(view, "html", html(options)) then return fail(form) end
+  if not form.waitsForNavigation or form.navigationFinished then showView(form) end
   return true
 end
 

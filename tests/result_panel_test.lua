@@ -20,6 +20,15 @@ local function newView(frame)
   view.windowStyle, view.windowTitle, view.level, view.allowGestures = chain, chain, chain, chain
   view.allowTextEntry, view.shadow = chain, chain
   function view:closeOnEscape(enabled) self.escapeCloses = enabled; return self end
+  function view:bringToFront() self.bringToFrontCount = (self.bringToFrontCount or 0) + 1; return self end
+  function view:hswindow()
+    return { focus = function() self.focusCount = (self.focusCount or 0) + 1; return true end }
+  end
+  function view:navigationCallback(callback)
+    if not failures.navigation then return nil end
+    self.navigationCallbackFn = callback
+    return self
+  end
   function view:windowCallback(callback) self.callback = callback; return self end
   function view:html(value)
     if failures.html == "raise" then error("html failure") end
@@ -112,6 +121,8 @@ assertEqual(panel.show(content), true, "show returns true after displaying valid
 assertEqual(#views, 1, "show creates one WebView")
 local firstView = views[1]
 assertEqual(firstView.shown, true, "show displays the WebView")
+assertEqual(firstView.bringToFrontCount, 1, "result view is brought to the front")
+assertEqual(firstView.focusCount, 1, "result window receives focus")
 assertEqual(firstView.escapeCloses, true, "result panel supports native Escape close")
 assert(firstView.htmlValue:find("&lt;tag attr=&quot;x&quot;&gt;", 1, true), "HTML escapes tags and quotes")
 assert(firstView.htmlValue:find("結果 &amp; 詳細<br>次の行", 1, true), "HTML escapes content and converts newlines")
@@ -171,7 +182,7 @@ for index, tap in ipairs(eventTaps) do
 end
 
 local function resetFailures()
-  failures.new, failures.html, failures.show = nil, nil, nil
+  failures.new, failures.html, failures.show, failures.navigation = nil, nil, nil, nil
   failures.delete, failures.stop, failures.tapDelete, failures.pasteboard = nil, nil, nil, nil
 end
 
@@ -180,7 +191,8 @@ local function assertShowFailure(name, kind, mode)
   failures[kind] = mode
   local viewCount, tapCount = #views, #eventTaps
   assertEqual(panel.show("failure: " .. name), false, name .. " show returns false")
-  assertEqual(#eventTaps, tapCount, name .. " creates no event tap")
+  local expectedTapCount = kind == "show" and tapCount + 1 or tapCount
+  assertEqual(#eventTaps, expectedTapCount, name .. " event tap creation follows WebView readiness")
   if kind == "html" or kind == "show" then
     assertEqual(#views, viewCount + 1, name .. " creates a WebView before display failure")
     assertEqual(views[#views].deleteCount, 1, name .. " attempts WebView cleanup")
@@ -199,6 +211,19 @@ assertShowFailure("view:html return failure", "html", "return")
 assertShowFailure("view:html exception", "html", "raise")
 assertShowFailure("view:show return failure", "show", "return")
 assertShowFailure("view:show exception", "show", "raise")
+
+-- A supported navigation callback keeps the native window hidden until the
+-- WebView surface has finished loading, then focuses the result window.
+failures.navigation = true
+assertEqual(panel.show("deferred result"), true, "deferred result panel starts")
+local deferredView = views[#views]
+assertEqual(deferredView.shown, false, "result view waits for navigation before display")
+deferredView.navigationCallbackFn("didFinishNavigation", deferredView)
+assertEqual(deferredView.shown, true, "result view displays after navigation")
+assertEqual(deferredView.bringToFrontCount, 1, "deferred result view is brought to the front")
+assertEqual(deferredView.focusCount, 1, "deferred result window receives focus")
+assertEqual(panel.stop(), true, "deferred result panel stops")
+failures.navigation = nil
 
 local function assertCloseFailure(name, kind, mode)
   resetFailures()

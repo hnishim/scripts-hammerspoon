@@ -111,7 +111,7 @@ _G.hs = {
 package.path = "./?.lua;./?/init.lua;" .. package.path
 local prompt = require("components.text_prompt")
 
-local function request()
+local function request(completeNavigation)
   local index = #results + 1
   local started = prompt.request({
     title = "AI input", message = "Enter text", submit = "Run", cancel = "Cancel",
@@ -119,6 +119,12 @@ local function request()
     results[index] = result
     callbacks[index] = (callbacks[index] or 0) + 1
   end)
+  if completeNavigation ~= false then
+    local view = views[#views]
+    if view and type(view.navigationCallbackFn) == "function" then
+      view.navigationCallbackFn("didFinishNavigation", view)
+    end
+  end
   return started, index
 end
 
@@ -128,12 +134,14 @@ local function send(action, value)
   controller.callback({ body = { action = action, text = value } })
 end
 
-local started, index = request()
+local started, index = request(false)
 assert(started ~= false, "custom WebView prompt starts")
 eq(#views, 1, "one view created")
-assert(views[1].shown, "input view is displayed")
+assert(not views[1].shown, "input view waits for navigation before display")
 assert(type(views[1].htmlValue) == "string" and views[1].htmlValue:find("<form", 1, true),
   "input view contains an HTML form")
+views[1].navigationCallbackFn("didFinishNavigation", views[1])
+assert(views[1].shown, "input view is displayed after navigation")
 eq(views[1].bringToFrontCount, 1, "input view is brought to the front")
 eq(views[1].focusCount, 1, "input window receives focus")
 eq(views[1].evaluatedScripts[1], "document.getElementById('value').focus();",
@@ -228,7 +236,7 @@ failures.new = nil
 
 failures.show = true
 started, index = request()
-eq(started, false, "view display failure cannot start")
+assert(started ~= false, "view display failure is reported after navigation")
 eq(results[index].status, "error", "view display failure returns an error")
 eq(callbacks[index], 1, "display failure reports error once")
 assert(views[#views].deleted, "failed display releases its view")
