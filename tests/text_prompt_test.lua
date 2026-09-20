@@ -23,7 +23,11 @@ local function newView(frame)
   function view:shadow(value) self.shadowEnabled = value; return self end
   function view:closeOnEscape(value) self.escapeEnabled = value; return self end
   function view:windowCallback(cb) self.windowCallbackFn = cb; return self end
-  function view:navigationCallback(cb) self.navigationCallbackFn = cb; return self end
+  function view:navigationCallback(cb)
+    if failures.navigationCallback then return nil end
+    self.navigationCallbackFn = cb
+    return self
+  end
   function view:bringToFront() self.bringToFrontCount = self.bringToFrontCount + 1; return self end
   function view:hswindow()
     return { focus = function() self.focusCount = self.focusCount + 1; return true end }
@@ -149,6 +153,7 @@ eq(views[1].evaluatedScripts[1], "document.getElementById('value').focus();",
 assert(type(views[1].navigationCallbackFn) == "function", "input observes navigation completion")
 views[1].navigationCallbackFn("didFinishNavigation", views[1])
 eq(views[1].bringToFrontCount, 2, "navigation completion refocuses the input view")
+
 -- Enter on the text field and a click on Submit must share the form's
 -- submit event path through the WKWebView message bridge. This checks the
 -- generated HTML contract; real keyboard delivery is a macOS acceptance check.
@@ -176,6 +181,31 @@ eq(callbacks[index], 1, "submission publishes exactly once")
 eq(views[1].deleted, true, "submission releases the view")
 send("submit", "late duplicate")
 eq(callbacks[index], 1, "late message cannot submit twice")
+
+-- Navigation failures still expose the native window and restore focus so a
+-- failed WebView load cannot leave an invisible, active prompt behind.
+local failureActions = { "didFailNavigation", "didFailProvisionalNavigation" }
+for _, action in ipairs(failureActions) do
+  started, index = request(false)
+  local failureView = views[#views]
+  assert(not failureView.shown, action .. ": input view waits before navigation result")
+  failureView.navigationCallbackFn(action, failureView)
+  assert(failureView.shown, action .. ": input view displays after navigation failure")
+  eq(failureView.bringToFrontCount, 1, action .. ": input view is brought to the front")
+  eq(failureView.focusCount, 1, action .. ": input window receives focus")
+  send("cancel")
+  eq(results[index].status, "cancelled", action .. ": failed-navigation prompt can cancel")
+end
+
+-- Older Hammerspoon builds without navigationCallback retain the synchronous
+-- compatibility path rather than leaving the prompt hidden.
+failures.navigationCallback = true
+started, index = request(false)
+assert(started ~= false, "prompt starts without navigation callback support")
+assert(views[#views].shown, "prompt uses compatibility display without navigation callback")
+send("cancel")
+eq(results[index].status, "cancelled", "compatibility prompt can cancel")
+failures.navigationCallback = nil
 
 started, index = request()
 assert(started ~= false, "empty-input prompt starts")

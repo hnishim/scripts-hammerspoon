@@ -223,6 +223,19 @@ assertEqual(deferredView.shown, true, "result view displays after navigation")
 assertEqual(deferredView.bringToFrontCount, 1, "deferred result view is brought to the front")
 assertEqual(deferredView.focusCount, 1, "deferred result window receives focus")
 assertEqual(panel.stop(), true, "deferred result panel stops")
+
+-- Navigation failures must use the same display/focus path as a successful
+-- load so a failed WebView cannot remain active but invisible.
+for _, action in ipairs({ "didFailNavigation", "didFailProvisionalNavigation" }) do
+  assertEqual(panel.show("deferred failure: " .. action), true, action .. " panel starts")
+  local failureView = views[#views]
+  assertEqual(failureView.shown, false, action .. " panel waits before navigation result")
+  failureView.navigationCallbackFn(action, failureView)
+  assertEqual(failureView.shown, true, action .. " panel displays after navigation failure")
+  assertEqual(failureView.bringToFrontCount, 1, action .. " panel is brought to the front")
+  assertEqual(failureView.focusCount, 1, action .. " result window receives focus")
+  assertEqual(panel.stop(), true, action .. " panel stops")
+end
 failures.navigation = nil
 
 local function assertCloseFailure(name, kind, mode)
