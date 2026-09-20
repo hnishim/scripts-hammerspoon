@@ -5,6 +5,7 @@ name: CI
   push:
     branches:
       - main
+      - 'candidate/hir-239-input-result-polish'
 
 permissions:
   contents: read
