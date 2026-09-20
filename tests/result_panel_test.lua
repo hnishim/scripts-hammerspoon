@@ -115,6 +115,10 @@ assertEqual(firstView.shown, true, "show displays the WebView")
 assertEqual(firstView.escapeCloses, true, "result panel supports native Escape close")
 assert(firstView.htmlValue:find("&lt;tag attr=&quot;x&quot;&gt;", 1, true), "HTML escapes tags and quotes")
 assert(firstView.htmlValue:find("結果 &amp; 詳細<br>次の行", 1, true), "HTML escapes content and converts newlines")
+assert(firstView.htmlValue:find("html, body { width: 100%; height: 100%;", 1, true),
+  "result surface fills the WebView height")
+assert(firstView.htmlValue:find("main { box-sizing: border-box; min-height: 100%;", 1, true),
+  "result content fills the WebView surface")
 assertEqual(#eventTaps, 1, "show creates one event tap")
 assertEqual(eventTaps[1].startCount, 0, "event tap waits for focus")
 

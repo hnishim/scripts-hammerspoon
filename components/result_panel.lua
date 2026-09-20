@@ -156,9 +156,10 @@ function M.show(content)
     viewDeleteOK = true,
   }
   local html = [[<!doctype html><html lang="en"><head><meta charset="utf-8"><style>
-    html, body { background: rgba(24, 24, 28, 0.86); color: #f5f5f7; margin: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
-    main { box-sizing: border-box; padding: 28px; border-radius: 16px; white-space: normal; line-height: 1.65; }
+    html, body { width: 100%; height: 100%; min-height: 100%;
+      background: rgba(24, 24, 28, 0.86); color: #f5f5f7; margin: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; overflow: auto; }
+    main { box-sizing: border-box; min-height: 100%; padding: 28px; border-radius: 16px; white-space: normal; line-height: 1.65; }
     .result { font-size: 17px; overflow-wrap: anywhere; }
   </style></head><body><main><div class="result">]] .. htmlEscape(content) .. [[</div></main></body></html>]]
 

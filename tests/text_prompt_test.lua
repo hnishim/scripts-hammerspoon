@@ -10,12 +10,28 @@ end
 
 local function chain(self) return self end
 local function newView(frame)
-  local view = { frame = frame, shown = false, deleted = false }
+  local view = {
+    frame = frame,
+    shown = false,
+    deleted = false,
+    bringToFrontCount = 0,
+    focusCount = 0,
+    evaluatedScripts = {},
+  }
   view.windowStyle, view.windowTitle, view.level = chain, chain, chain
   view.allowTextEntry, view.allowGestures, view.transparent, view.opaque = chain, chain, chain, chain
   function view:shadow(value) self.shadowEnabled = value; return self end
   function view:closeOnEscape(value) self.escapeEnabled = value; return self end
   function view:windowCallback(cb) self.windowCallbackFn = cb; return self end
+  function view:navigationCallback(cb) self.navigationCallbackFn = cb; return self end
+  function view:bringToFront() self.bringToFrontCount = self.bringToFrontCount + 1; return self end
+  function view:hswindow()
+    return { focus = function() self.focusCount = self.focusCount + 1; return true end }
+  end
+  function view:evaluateJavaScript(script)
+    self.evaluatedScripts[#self.evaluatedScripts + 1] = script
+    return self
+  end
   function view:userContentController(controller) self.controller = controller; return self end
   function view:html(value) self.htmlValue = value; return self end
   function view:show()
@@ -118,10 +134,21 @@ eq(#views, 1, "one view created")
 assert(views[1].shown, "input view is displayed")
 assert(type(views[1].htmlValue) == "string" and views[1].htmlValue:find("<form", 1, true),
   "input view contains an HTML form")
+eq(views[1].bringToFrontCount, 1, "input view is brought to the front")
+eq(views[1].focusCount, 1, "input window receives focus")
+eq(views[1].evaluatedScripts[1], "document.getElementById('value').focus();",
+  "input field receives JavaScript focus")
+assert(type(views[1].navigationCallbackFn) == "function", "input observes navigation completion")
+views[1].navigationCallbackFn("didFinishNavigation", views[1])
+eq(views[1].bringToFrontCount, 2, "navigation completion refocuses the input view")
 -- Enter on the text field and a click on Submit must share the form's
 -- submit event path through the WKWebView message bridge. This checks the
 -- generated HTML contract; real keyboard delivery is a macOS acceptance check.
 local formHTML = views[1].htmlValue
+assert(formHTML:find("html, body { width: 100%; height: 100%;", 1, true),
+  "input surface fills the WebView height")
+assert(formHTML:find("main { box-sizing: border-box; min-height: 100%;", 1, true),
+  "input content fills the WebView surface")
 assert(formHTML:match("<form[^>]*>"), "input has a real HTML form")
 assert(formHTML:match("<input[^>]*>"), "form has a single-line input accepting Enter")
 assert(formHTML:match("<button[^>]*type%s*=%s*['\"]?submit") or

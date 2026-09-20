@@ -104,6 +104,10 @@ package.path = "./?.lua;" .. package.path
 package.preload["components.hud"] = function()
   return {
     show = function(message) hudEvents[#hudEvents + 1] = "show:" .. message end,
+    showTransient = function(message, seconds)
+      hudEvents[#hudEvents + 1] = "transient:" .. message .. ":" .. tostring(seconds)
+      return true
+    end,
     close = function() hudEvents[#hudEvents + 1] = "close" end,
   }
 end
@@ -227,11 +231,14 @@ do
   promptResult = { status = "empty" }
   local beforeTasks = #tasks
   local beforeAlerts = #alerts
+  local beforeHudEvents = #hudEvents
   ai.run(promptPath, model, "display")
   assertEqual(#tasks, beforeTasks, "pending empty input starts no credentials task")
   finishPrompt(promptResult)
   assertEqual(#tasks, beforeTasks, "empty input starts no credentials task")
-  assertEqual(#alerts, beforeAlerts + 1, "empty input alerts once")
+  assertEqual(#alerts, beforeAlerts, "empty input does not use an alert")
+  assertEqual(hudEvents[beforeHudEvents + 1], "transient:Input is empty.:2",
+    "empty input uses the transient HUD")
 end
 
 do

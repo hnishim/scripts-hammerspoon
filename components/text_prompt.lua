@@ -108,15 +108,38 @@ local function screenFrame()
   return frame
 end
 
+local function focusInput(form)
+  if current ~= form or not form.active or not form.view then return false end
+
+  local broughtForward = call(form.view, "bringToFront", false)
+  local focusedWindow = false
+  if type(form.view.hswindow) == "function" then
+    local windowOK, window = pcall(form.view.hswindow, form.view)
+    if windowOK and window and type(window.focus) == "function" then
+      local focusOK, result = pcall(window.focus, window)
+      focusedWindow = focusOK and result ~= false
+    end
+  end
+
+  local focusedField = call(form.view, "evaluateJavaScript",
+    "document.getElementById('value').focus();")
+  return broughtForward or focusedWindow or focusedField
+end
+
+local function handleNavigation(form, action)
+  if action == "didFinishNavigation" then focusInput(form) end
+end
+
 local function html(options)
   local title = escape(options.title or "Input")
   local message = escape(options.message or "")
   local submit = escape(options.submit or "Submit")
   local cancel = escape(options.cancel or "Cancel")
   return [[<!doctype html><html lang="en"><head><meta charset="utf-8"><style>
-    html, body { background: rgba(24, 24, 28, 0.86); color: #f5f5f7; margin: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
-    main { box-sizing: border-box; padding: 28px; border-radius: 16px; }
+    html, body { width: 100%; height: 100%; min-height: 100%;
+      background: rgba(24, 24, 28, 0.86); color: #f5f5f7; margin: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; overflow: hidden; }
+    main { box-sizing: border-box; min-height: 100%; padding: 28px; border-radius: 16px; }
     h1 { font-size: 18px; font-weight: 500; margin: 0 0 12px; }
     label { display: block; font-size: 14px; line-height: 1.5; margin-bottom: 12px; }
     input { box-sizing: border-box; display: block; width: 100%; border: 1px solid #767681;
@@ -181,6 +204,11 @@ function M.request(options, callback)
     end)
     and call(view, "html", html(options))
   if not configured then return fail(form) end
+  -- Optional on older Hammerspoon builds; when available this runs after the
+  -- HTML has loaded, which is more reliable than the input autofocus alone.
+  call(view, "navigationCallback", function(action)
+    handleNavigation(form, action)
+  end)
   local tapOK, tap = pcall(hs.eventtap.new, { hs.eventtap.event.types.keyDown },
     function(event) return handleKey(form, event) end)
   if not tapOK or not tap then return fail(form) end
@@ -189,6 +217,7 @@ function M.request(options, callback)
   -- The focus callback may run synchronously during show; monitoring must
   -- already be installed and this form must be current before it can fire.
   if not call(view, "show") then return fail(form) end
+  focusInput(form)
   return true
 end
 

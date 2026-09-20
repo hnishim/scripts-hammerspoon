@@ -18,6 +18,15 @@ end
 local function showMessage(message) hs.alert.show(message, 2) end
 local function showSafeError() showMessage("Could not run the Gemini command.") end
 
+local function showTransientMessage(message)
+  if type(hud) == "table" and type(hud.showTransient) == "function" then
+    local ok, shown = pcall(hud.showTransient, message, 2)
+    if ok and shown ~= nil and shown ~= false then return true end
+  end
+  showMessage(message)
+  return false
+end
+
 local function stopTimer(timer)
   if timer and timer.stop then pcall(timer.stop, timer) end
 end
@@ -296,7 +305,7 @@ local function promptDisplay(promptPath, model, modelFailover)
     if result.status == "submitted" then
       beginOperation(promptPath, model, modelFailover, result.text)
     elseif result.status == "empty" then
-      showMessage("Input is empty.")
+      showTransientMessage("Input is empty.")
     elseif result.status ~= "cancelled" then
       showSafeError()
     end
