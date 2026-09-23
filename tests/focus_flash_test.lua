@@ -103,6 +103,10 @@ local first = window(101, { x = 40, y = 60, w = 440, h = 320 })
 focused(filters[1], first)
 same(#canvases, 1, "focus creates exactly one overlay")
 same(canvases[1].shown, true, "overlay is displayed")
+same(canvases[1].hidden or canvases[1].deleted, true,
+  "normal flash starts fading without another focus event")
+assert(type(canvases[1].fade) == "number" and math.abs(canvases[1].fade - 0.2) < 0.001,
+  "normal flash fades out in approximately 200ms")
 same(canvases[1].frame.x, 40, "overlay follows window x coordinate")
 same(canvases[1].frame.y, 60, "overlay follows window y coordinate")
 same(canvases[1].frame.w, 440, "overlay follows window width")
@@ -125,8 +129,10 @@ focused(filters[1], second)
 same(#canvases, 2, "another window creates a new overlay")
 same(canvases[1].deleted, true, "previous overlay is removed on quick switching")
 same(canvases[2].shown, true, "new window is highlighted")
-assert(canvases[2].fade == nil or math.abs(canvases[2].fade - 0.2) < 0.001,
-  "a normal flash fades out in approximately 200ms")
+same(canvases[2].hidden or canvases[2].deleted, true,
+  "each normal flash starts fading without another focus event")
+assert(type(canvases[2].fade) == "number" and math.abs(canvases[2].fade - 0.2) < 0.001,
+  "each normal flash fades out in approximately 200ms")
 
 focused(filters[1], nil)
 focused(filters[1], window(103, { x = 0, y = 0, w = 0, h = 100 }))
