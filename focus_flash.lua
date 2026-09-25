@@ -64,7 +64,7 @@ end
 
 function M.start()
   M.stop()
-  local ok, filter = pcall(hs.window.filter.new, true)
+  local ok, filter = pcall(function() return hs.window.filter.new(true) end)
   if not ok or not filter then return false end
   local subscribed = pcall(function()
     filter:subscribe(hs.window.filter.windowFocused, focused, false)
