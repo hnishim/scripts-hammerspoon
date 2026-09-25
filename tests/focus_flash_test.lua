@@ -105,8 +105,9 @@ same(#canvases, 1, "focus creates exactly one overlay")
 same(canvases[1].shown, true, "overlay is displayed")
 same(canvases[1].hidden or canvases[1].deleted, true,
   "normal flash starts fading without another focus event")
-assert(type(canvases[1].fade) == "number" and math.abs(canvases[1].fade - 0.2) < 0.001,
-  "normal flash fades out in approximately 200ms")
+assert(type(canvases[1].fade) == "number" and canvases[1].fade >= 0.20
+  and canvases[1].fade <= 0.50,
+  "normal flash must have finite short fading within the approved adjustment range")
 same(canvases[1].frame.x, 40, "overlay follows window x coordinate")
 same(canvases[1].frame.y, 60, "overlay follows window y coordinate")
 same(canvases[1].frame.w, 440, "overlay follows window width")
@@ -116,8 +117,24 @@ assert(shape and shape.type == "rectangle" and shape.action == "fill",
   "overlay is a filled rectangle, not an outline")
 assert(shape.roundedRectRadii and shape.roundedRectRadii.xRadius == 20
   and shape.roundedRectRadii.yRadius == 20, "initial corner radius is 20pt")
-assert(shape.fillColor and math.abs(shape.fillColor.alpha - 0.12) < 0.001,
-  "initial overlay opacity is 12 percent")
+local function checkFlashColor(color)
+  assert(type(color) == "table", "flash must use an explicit RGB fill color")
+  for _, channel in ipairs({ "red", "green", "blue" }) do
+    assert(type(color[channel]) == "number" and color[channel] >= 0
+      and color[channel] <= 1, "flash RGB channels must be in the range 0..1")
+  end
+  assert(type(color.alpha) == "number" and color.alpha >= 0.20
+    and color.alpha <= 0.50, "flash opacity must be within the approved adjustment range")
+  assert(color.blue > color.green and color.green > color.red and color.red > 0,
+    "flash must be a pale-blue overlay that brightens a dark background")
+  local whiteContrast = math.max(
+    (1 - color.red) * color.alpha,
+    (1 - color.green) * color.alpha,
+    (1 - color.blue) * color.alpha)
+  assert(whiteContrast >= 0.10,
+    "flash must produce at least 0.10 composite channel contrast on a white background")
+end
+checkFlashColor(shape.fillColor)
 assert(canvases[1].mouseCallbackValue == nil, "overlay must not consume mouse events")
 assert(canvases[1].clickActivatingValue ~= true, "overlay must not activate Hammerspoon")
 
@@ -131,12 +148,17 @@ same(canvases[1].deleted, true, "previous overlay is removed on quick switching"
 same(canvases[2].shown, true, "new window is highlighted")
 same(canvases[2].hidden or canvases[2].deleted, true,
   "each normal flash starts fading without another focus event")
-assert(type(canvases[2].fade) == "number" and math.abs(canvases[2].fade - 0.2) < 0.001,
-  "each normal flash fades out in approximately 200ms")
+assert(type(canvases[2].fade) == "number" and canvases[2].fade >= 0.20
+  and canvases[2].fade <= 0.50,
+  "each normal flash must have finite short fading within the approved adjustment range")
+checkFlashColor(canvases[2].elements[1].fillColor)
 
 focused(filters[1], nil)
 focused(filters[1], window(103, { x = 0, y = 0, w = 0, h = 100 }))
-same(#canvases, 2, "missing or invalid windows never create overlays")
+local special = window(104, { x = 0, y = 0, w = 300, h = 200 })
+special.isStandard = function() return false end
+focused(filters[1], special)
+same(#canvases, 2, "missing, invalid, or nonstandard windows never create overlays")
 
 flash.start()
 same(#filters, 2, "restart creates one replacement watcher")
