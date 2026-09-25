@@ -1,8 +1,9 @@
 local M = {}
 
 local cornerRadius = 20
-local opacity = 0.12
-local fadeSeconds = 0.2
+local flashColor = { red = 0.40, green = 0.70, blue = 1.00 }
+local opacity = 0.30
+local fadeSeconds = 0.30
 
 local watcher
 local overlay
@@ -35,7 +36,7 @@ local function focused(window)
       action = "fill",
       frame = { x = 0, y = 0, w = "100%", h = "100%" },
       roundedRectRadii = { xRadius = cornerRadius, yRadius = cornerRadius },
-      fillColor = { white = 1, alpha = opacity },
+      fillColor = { red = flashColor.red, green = flashColor.green, blue = flashColor.blue, alpha = opacity },
     })
     overlay:clickActivating(false)
     if hs.canvas.windowLevels and hs.canvas.windowLevels.overlay then
