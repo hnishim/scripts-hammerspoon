@@ -133,7 +133,7 @@ local function checkOutline(canvas, width, height)
 end
 checkOutline(canvases[1], 440, 320)
 assert(canvases[1].mouseCallbackValue == nil, "overlay must not consume mouse events")
-assert(canvases[1].clickActivatingValue ~= true, "overlay must not activate Hammerspoon")
+same(canvases[1].clickActivatingValue, false, "first outline must explicitly disable click activation")
 
 focused(filters[1], window(101, { x = 40, y = 60, w = 440, h = 320 }))
 same(#canvases, 1, "duplicate focus of the same window does not flash again")
@@ -151,6 +151,7 @@ same(canvases[2].frame.y, 70, "second outline follows window y")
 same(canvases[2].frame.w, 500, "second outline follows window width")
 same(canvases[2].frame.h, 350, "second outline follows window height")
 checkOutline(canvases[2], 500, 350)
+same(canvases[2].clickActivatingValue, false, "next outline must explicitly disable click activation")
 
 focused(filters[1], nil)
 focused(filters[1], window(103, { x = 0, y = 0, w = 0, h = 100 }))
