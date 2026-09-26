@@ -105,7 +105,7 @@ same(#canvases, 1, "focus creates exactly one overlay")
 same(canvases[1].shown, true, "overlay is displayed")
 same(canvases[1].hidden or canvases[1].deleted, true,
   "normal flash starts fading without another focus event")
-same(canvases[1].fade, 0.30, "outline disappears after 0.30 seconds")
+same(canvases[1].fade, 0.60, "outline disappears after 0.60 seconds")
 same(canvases[1].frame.x, 40, "overlay follows window x coordinate")
 same(canvases[1].frame.y, 60, "overlay follows window y coordinate")
 same(canvases[1].frame.w, 440, "overlay follows window width")
@@ -145,7 +145,7 @@ same(canvases[1].deleted, true, "previous overlay is removed on quick switching"
 same(canvases[2].shown, true, "new window is highlighted")
 same(canvases[2].hidden or canvases[2].deleted, true,
   "each normal flash starts fading without another focus event")
-same(canvases[2].fade, 0.30, "each outline disappears after 0.30 seconds")
+same(canvases[2].fade, 0.60, "each outline disappears after 0.60 seconds")
 same(canvases[2].frame.x, 700, "second outline follows window x")
 same(canvases[2].frame.y, 70, "second outline follows window y")
 same(canvases[2].frame.w, 500, "second outline follows window width")

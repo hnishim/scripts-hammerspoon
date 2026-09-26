@@ -3,7 +3,7 @@ local M = {}
 local cornerRadius = 20
 local strokeWidth = 4
 local strokeColor = { red = 0.20, green = 0.65, blue = 1.00, alpha = 0.95 }
-local fadeSeconds = 0.30
+local fadeSeconds = 0.60
 
 local watcher
 local overlay
