@@ -105,38 +105,35 @@ same(#canvases, 1, "focus creates exactly one overlay")
 same(canvases[1].shown, true, "overlay is displayed")
 same(canvases[1].hidden or canvases[1].deleted, true,
   "normal flash starts fading without another focus event")
-assert(type(canvases[1].fade) == "number" and canvases[1].fade >= 0.20
-  and canvases[1].fade <= 0.50,
-  "normal flash must have finite short fading within the approved adjustment range")
+same(canvases[1].fade, 2.00, "outline disappears after 2.00 seconds")
 same(canvases[1].frame.x, 40, "overlay follows window x coordinate")
 same(canvases[1].frame.y, 60, "overlay follows window y coordinate")
 same(canvases[1].frame.w, 440, "overlay follows window width")
 same(canvases[1].frame.h, 320, "overlay follows window height")
-local shape = canvases[1].elements[1]
-assert(shape and shape.type == "rectangle" and shape.action == "fill",
-  "overlay is a filled rectangle, not an outline")
-assert(shape.roundedRectRadii and shape.roundedRectRadii.xRadius == 20
-  and shape.roundedRectRadii.yRadius == 20, "initial corner radius is 20pt")
-local function checkFlashColor(color)
-  assert(type(color) == "table", "flash must use an explicit RGB fill color")
-  for _, channel in ipairs({ "red", "green", "blue" }) do
-    assert(type(color[channel]) == "number" and color[channel] >= 0
-      and color[channel] <= 1, "flash RGB channels must be in the range 0..1")
-  end
-  assert(type(color.alpha) == "number" and color.alpha >= 0.20
-    and color.alpha <= 0.50, "flash opacity must be within the approved adjustment range")
-  assert(color.blue > color.green and color.green > color.red and color.red > 0,
-    "flash must be a pale-blue overlay that brightens a dark background")
-  local whiteContrast = math.max(
-    (1 - color.red) * color.alpha,
-    (1 - color.green) * color.alpha,
-    (1 - color.blue) * color.alpha)
-  assert(whiteContrast >= 0.10,
-    "flash must produce at least 0.10 composite channel contrast on a white background")
+local function checkOutline(canvas, width, height)
+  same(#canvas.elements, 1, "exactly one canvas element")
+  local shape = canvas.elements[1]
+  assert(shape and shape.type == "rectangle" and shape.action == "stroke",
+    "highlight uses a stroked rectangle, not a filled overlay")
+  same(shape.fillColor, nil, "outline must not fill window contents")
+  same(shape.strokeWidth, 4, "outline width is 4pt")
+  same(shape.frame.x, 2, "outline is inset 2pt on x")
+  same(shape.frame.y, 2, "outline is inset 2pt on y")
+  same(shape.frame.w, width - 4, "outline width fits inside canvas")
+  same(shape.frame.h, height - 4, "outline height fits inside canvas")
+  assert(shape.roundedRectRadii
+    and shape.roundedRectRadii.xRadius == 20
+    and shape.roundedRectRadii.yRadius == 20, "outline corner radius is 20pt")
+  local color = shape.strokeColor
+  assert(type(color) == "table", "outline must have an explicit stroke color")
+  same(color.red, 0.20, "outline red")
+  same(color.green, 0.65, "outline green")
+  same(color.blue, 1.00, "outline blue")
+  same(color.alpha, 0.95, "outline opacity")
 end
-checkFlashColor(shape.fillColor)
+checkOutline(canvases[1], 440, 320)
 assert(canvases[1].mouseCallbackValue == nil, "overlay must not consume mouse events")
-assert(canvases[1].clickActivatingValue ~= true, "overlay must not activate Hammerspoon")
+same(canvases[1].clickActivatingValue, false, "first outline must explicitly disable click activation")
 
 focused(filters[1], window(101, { x = 40, y = 60, w = 440, h = 320 }))
 same(#canvases, 1, "duplicate focus of the same window does not flash again")
@@ -148,17 +145,24 @@ same(canvases[1].deleted, true, "previous overlay is removed on quick switching"
 same(canvases[2].shown, true, "new window is highlighted")
 same(canvases[2].hidden or canvases[2].deleted, true,
   "each normal flash starts fading without another focus event")
-assert(type(canvases[2].fade) == "number" and canvases[2].fade >= 0.20
-  and canvases[2].fade <= 0.50,
-  "each normal flash must have finite short fading within the approved adjustment range")
-checkFlashColor(canvases[2].elements[1].fillColor)
+same(canvases[2].fade, 2.00, "each outline disappears after 2.00 seconds")
+same(canvases[2].frame.x, 700, "second outline follows window x")
+same(canvases[2].frame.y, 70, "second outline follows window y")
+same(canvases[2].frame.w, 500, "second outline follows window width")
+same(canvases[2].frame.h, 350, "second outline follows window height")
+checkOutline(canvases[2], 500, 350)
+same(canvases[2].clickActivatingValue, false, "next outline must explicitly disable click activation")
 
 focused(filters[1], nil)
 focused(filters[1], window(103, { x = 0, y = 0, w = 0, h = 100 }))
+focused(filters[1], window(105, { x = 0, y = 0, w = 4, h = 100 }))
+focused(filters[1], window(106, { x = 0, y = 0, w = 100, h = 4 }))
+focused(filters[1], window(107, { x = 0, y = 0, w = "invalid", h = 100 }))
+focused(filters[1], window(108, nil))
 local special = window(104, { x = 0, y = 0, w = 300, h = 200 })
 special.isStandard = function() return false end
 focused(filters[1], special)
-same(#canvases, 2, "missing, invalid, or nonstandard windows never create overlays")
+same(#canvases, 2, "missing, tiny, invalid, or nonstandard windows never create outlines")
 
 flash.start()
 same(#filters, 2, "restart creates one replacement watcher")

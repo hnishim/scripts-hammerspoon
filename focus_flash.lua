@@ -1,9 +1,9 @@
 local M = {}
 
 local cornerRadius = 20
-local flashColor = { red = 0.40, green = 0.70, blue = 1.00 }
-local opacity = 0.30
-local fadeSeconds = 0.30
+local strokeWidth = 4
+local strokeColor = { red = 0.20, green = 0.65, blue = 1.00, alpha = 0.95 }
+local fadeSeconds = 2.00
 
 local watcher
 local overlay
@@ -24,7 +24,7 @@ local function focused(window)
   end)
   if not ok or not id or standard == false or not frame
     or type(frame.w) ~= "number" or type(frame.h) ~= "number"
-    or frame.w <= 0 or frame.h <= 0 or id == lastWindowID then
+    or frame.w <= strokeWidth or frame.h <= strokeWidth or id == lastWindowID then
     return
   end
 
@@ -33,10 +33,14 @@ local function focused(window)
     overlay = hs.canvas.new(frame)
     overlay:appendElements({
       type = "rectangle",
-      action = "fill",
-      frame = { x = 0, y = 0, w = "100%", h = "100%" },
+      action = "stroke",
+      frame = {
+        x = strokeWidth / 2, y = strokeWidth / 2,
+        w = frame.w - strokeWidth, h = frame.h - strokeWidth,
+      },
       roundedRectRadii = { xRadius = cornerRadius, yRadius = cornerRadius },
-      fillColor = { red = flashColor.red, green = flashColor.green, blue = flashColor.blue, alpha = opacity },
+      strokeWidth = strokeWidth,
+      strokeColor = strokeColor,
     })
     overlay:clickActivating(false)
     if hs.canvas.windowLevels and hs.canvas.windowLevels.overlay then
