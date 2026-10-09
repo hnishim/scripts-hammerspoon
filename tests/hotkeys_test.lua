@@ -9,6 +9,7 @@ local failAtBind
 local failEventTapNew = false
 local failEventTapStart = false
 local frontmostName = "Finder"
+local frontmostBundleID = "com.apple.finder"
 local pasteboardWrites = 0
 local keyStrokes = 0
 local fileNameCopyStopCalls = 0
@@ -40,6 +41,7 @@ local function copyBinding(binding)
   local copy = {
     modifiers = copyArray(binding.modifiers),
     key = binding.key,
+    frontmostBundleID = binding.frontmostBundleID,
     action = {},
   }
   for name, value in pairs(binding.action) do copy.action[name] = value end
@@ -124,7 +126,13 @@ _G.hs = {
   },
   application = {
     frontmostApplication = function()
-      return { name = function() return frontmostName end }
+      return {
+        name = function() return frontmostName end,
+        bundleID = function()
+          if frontmostBundleID == "RAISE" then error("mock bundle lookup failed") end
+          return frontmostBundleID
+        end,
+      }
     end,
   },
   pasteboard = {
@@ -167,6 +175,11 @@ local expectedFileNameCopy = {
   modifiers = { "cmd", "shift" }, key = "c",
   action = { type = "file_name_copy" },
 }
+local expectedNotionHotkey = {
+  modifiers = { "cmd", "alt" }, key = "c", frontmostBundleID = "notion.id",
+  action = { type = "utility", executablePath = "/bin/bash",
+    scriptPath = commandsRoot .. "notion-current-page.sh" },
+}
 
 local requiredBySignature = {}
 for _, binding in ipairs(requiredBindings) do
@@ -189,6 +202,7 @@ local function assertBindingEqual(actual, expectedBinding, label)
   assertEqual(signature(actual.modifiers, actual.key), signature(expectedBinding.modifiers, expectedBinding.key),
     label .. " modifier/key")
   assertEqual(actual.key, expectedBinding.key, label .. " key")
+  assertEqual(actual.frontmostBundleID, expectedBinding.frontmostBundleID, label .. " frontmost app restriction")
   assert(type(actual.action) == "table", label .. " action must be a table")
   assertEqual(actual.action.type, expectedBinding.action.type, label .. " action type")
   for name, value in pairs(expectedBinding.action) do
@@ -254,7 +268,8 @@ end
 local function collectRegularBindings(bindings)
   local regular = {}
   for _, binding in ipairs(bindings) do
-    if not (binding.action and binding.action.type == "file_name_copy") then
+    if not (binding.action and binding.action.type == "file_name_copy")
+        and binding.frontmostBundleID == nil then
       regular[#regular + 1] = binding
     end
   end
@@ -283,6 +298,9 @@ for key, requiredBinding in pairs(requiredBySignature) do
 end
 assert(fileNameCopyConfig, "config contains the file_name_copy eventtap action")
 assertBindingEqual(fileNameCopyConfig, expectedFileNameCopy, "file_name_copy config binding")
+local notionConfig = configBySignature[signature(expectedNotionHotkey.modifiers, expectedNotionHotkey.key)]
+assert(notionConfig, "Notion scoped shortcut exists in configuration")
+assertBindingEqual(notionConfig, expectedNotionHotkey, "Notion scoped shortcut configuration")
 
 local regularBindings = collectRegularBindings(config)
 local regularCount = #regularBindings
@@ -300,6 +318,7 @@ assertEqual(#eventTapCalls, 1, "first start registers one event tap")
 assertEqual(eventTapCalls[1].started, true, "first event tap starts")
 assertTableEqual(eventTapCalls[1].types, { hs.eventtap.event.types.keyDown }, "event tap listens only for keyDown")
 assertEqual(handles["cmd+shift:c"], nil, "file_name_copy is handled by eventtap, not hs.hotkey.bind")
+assertEqual(handles["alt+cmd:c"], nil, "Notion-only key never registers as a global hs.hotkey.bind")
 assertRegisteredBindings(regularBindings, 1)
 assertCallbacks(regularBindings, "initial registered bindings")
 
@@ -313,6 +332,7 @@ assertEqual(#deletedHandles, regularCount, "reload deletes every previous hotkey
 assertEqual(#eventTapCalls, 2, "reload registers one fresh event tap")
 assertEqual(fileNameCopyStopCalls, 1, "reload stops the previous file_name_copy action")
 assertEqual(handles["cmd+shift:c"], nil, "reloaded file_name_copy remains eventtap-only")
+assertEqual(handles["alt+cmd:c"], nil, "reloaded Notion-only shortcut stays eventtap-only")
 assertEqual(eventTapCalls[1].stopped, true, "reload stops the previous event tap")
 assertEqual(eventTapCalls[1].deleted, true, "reload deletes the previous event tap")
 assertEqual(eventTapCalls[2].started, true, "reload starts the fresh event tap")
@@ -366,6 +386,46 @@ assertEventPasses("Finder", { "cmd", "ctrl", "shift" }, 8, "c", "target-app cmd+
 assertEventPasses("Cursor", { "cmd", "ctrl", "shift" }, 8, "c", "Cursor target-app cmd+ctrl+shift+c event")
 assertEventPasses("Safari", { "cmd", "shift" }, 8, "c", "non-target app event")
 assertEventPasses("Cursor", { "cmd", "shift" }, 9, "v", "non-target key event")
+
+-- HIR-345: only Notion's bundle identity may consume Cmd+Option+C.
+-- A display name is insufficient; Finder must retain its native Copy Pathname.
+local function assertNotionShortcutConsumed(appName)
+  frontmostName = appName
+  frontmostBundleID = "notion.id"
+  clearActionCalls()
+  local beforeAlerts, beforePasteboardWrites, beforeKeyStrokes = #alertCalls, pasteboardWrites, keyStrokes
+  assertEqual(eventTapCalls[2].callback(event({ "cmd", "alt" }, 8, "c")), true,
+    "Notion exact shortcut is consumed")
+  assertEqual(#actionCalls, 1, "Notion shortcut dispatches exactly once")
+  assertEqual(actionCalls[1].name, "utility", "Notion shortcut uses the existing utility executor")
+  assertTableEqual(actionCalls[1].args, { "/bin/bash", commandsRoot .. "notion-current-page.sh" },
+    "Notion shortcut retains the existing command")
+  assertEqual(#alertCalls, beforeAlerts, "Notion shortcut does not show unexpected alerts")
+  assertEqual(pasteboardWrites, beforePasteboardWrites, "hotkey handler does not write to pasteboard directly")
+  assertEqual(keyStrokes, beforeKeyStrokes, "hotkey handler does not synthesize keys")
+  clearActionCalls()
+end
+
+assertNotionShortcutConsumed("Notion")
+assertNotionShortcutConsumed("Different App Name") -- bundle identity, not mutable UI label
+
+frontmostBundleID = "com.apple.finder"
+assertEventPasses("Finder", { "cmd", "alt" }, 8, "c", "Finder Copy Pathname")
+frontmostBundleID = "com.example.other"
+assertEventPasses("Notion", { "cmd", "alt" }, 8, "c", "Notion-like name with wrong bundle ID")
+frontmostBundleID = nil
+assertEventPasses("Notion", { "cmd", "alt" }, 8, "c", "missing bundle ID")
+frontmostBundleID = "RAISE"
+assertEventPasses("Notion", { "cmd", "alt" }, 8, "c", "failed bundle ID lookup")
+frontmostBundleID = "notion.id"
+assertEventPasses("Notion", { "cmd", "alt", "shift" }, 8, "c", "Notion extra shift")
+assertEventPasses("Notion", { "cmd", "alt", "ctrl" }, 8, "c", "Notion extra control")
+assertEventPasses("Notion", { "cmd", "alt" }, 9, "v", "Notion unrelated key")
+local keyUp = event({ "cmd", "alt" }, 8, "c")
+keyUp.getType = function() return 11 end
+assertEqual(eventTapCalls[2].callback(keyUp), false, "keyUp never consumes a Notion shortcut")
+assertEqual(#actionCalls, 0, "keyUp never starts the command")
+frontmostBundleID = "com.apple.finder"
 
 -- Change only configuration data: modifier/key and action targets are all observed
 -- through the dispatcher without changing production action code. Non-required
@@ -436,6 +496,7 @@ end
 local aiIndex = configIndexFor(requiredBindings[1])
 local urlIndex = configIndexFor(requiredBySignature[signature({ "cmd", "ctrl", "alt", "shift" }, "g")])
 local fileNameCopyIndex = configIndexFor(expectedFileNameCopy)
+local notionIndex = configIndexFor(expectedNotionHotkey)
 
 local changedAI = copyBinding(config[aiIndex])
 changedAI.modifiers, changedAI.key = findUnusedSignature()
@@ -696,6 +757,21 @@ local invalidCases = {
   { "empty Utility scriptPath", function()
       local _, b = appendTemporaryBinding({ type = "utility", executablePath = "/bin/test", scriptPath = "/tmp/test.sh" })
       b.action.scriptPath = ""
+    end },
+  { "Notion scope is missing", function()
+      local binding = copyBinding(config[notionIndex])
+      binding.frontmostBundleID = nil
+      config[notionIndex] = binding
+    end },
+  { "Notion scope has wrong identity", function()
+      local binding = copyBinding(config[notionIndex])
+      binding.frontmostBundleID = "com.example.other"
+      config[notionIndex] = binding
+    end },
+  { "Notion scope is malformed", function()
+      local binding = copyBinding(config[notionIndex])
+      binding.frontmostBundleID = 123
+      config[notionIndex] = binding
     end },
   { "duplicate modifier and key", function()
       local _, duplicate = appendTemporaryBinding({ type = "app", app = "Duplicate Test App" })
