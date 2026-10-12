@@ -127,6 +127,7 @@ end
 local function validateBindings(bindings)
   if type(bindings) ~= "table" then return false, "hotkeys_config must return a bindings array" end
   if #bindings == 0 then return false, "hotkeys_config bindings array must not be empty" end
+  local notionHotkeySignature = bindingSignature({ "cmd", "alt" }, "c")
   local seen = {}
   for key in pairs(bindings) do
     if type(key) ~= "number" or key < 1 or key > #bindings or key % 1 ~= 0 then
@@ -150,6 +151,9 @@ local function validateBindings(bindings)
       end
     end
     local signature = bindingSignature(binding.modifiers, binding.key)
+    if signature == notionHotkeySignature and binding.frontmostBundleID ~= notionBundleID then
+      return false, "binding " .. index .. " must scope cmd+alt+c to notion.id"
+    end
     if seen[signature] then return false, "binding " .. index .. " duplicates modifier/key " .. signature end
     seen[signature] = true
   end
