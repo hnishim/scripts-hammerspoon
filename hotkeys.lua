@@ -175,6 +175,7 @@ local function dispatch(action)
   if action.type == "url" then return urlCommands.run(action.command) end
   if action.type == "two_panes_finder" then return twoPanesFinder.run() end
   if action.type == "chicago_title_case" then return chicagoTitleCase.run() end
+  if action.type == "file_name_copy" then return fileNameCopy.run() end
   return utilityCommand.run(action.executablePath, action.scriptPath)
 end
 
