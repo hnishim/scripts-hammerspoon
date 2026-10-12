@@ -11,6 +11,7 @@ local M = {}
 local handles = {}
 local fileNameCopyEventTap
 local lastError
+local notionBundleID = "notion.id"
 
 local aiModes = { display = true, replace = true }
 local windowCommands = {
@@ -126,6 +127,7 @@ end
 local function validateBindings(bindings)
   if type(bindings) ~= "table" then return false, "hotkeys_config must return a bindings array" end
   if #bindings == 0 then return false, "hotkeys_config bindings array must not be empty" end
+  local notionHotkeySignature = bindingSignature({ "cmd", "alt" }, "c")
   local seen = {}
   for key in pairs(bindings) do
     if type(key) ~= "number" or key < 1 or key > #bindings or key % 1 ~= 0 then
@@ -140,7 +142,18 @@ local function validateBindings(bindings)
     if not nonEmptyString(binding.key) then return false, "binding " .. index .. ".key must be a non-empty string" end
     local actionOK, actionError = validateAction(binding.action, index)
     if not actionOK then return false, actionError end
+    if binding.frontmostBundleID ~= nil then
+      if not nonEmptyString(binding.frontmostBundleID) then
+        return false, "binding " .. index .. ".frontmostBundleID must be a non-empty string"
+      end
+      if binding.frontmostBundleID ~= notionBundleID then
+        return false, "binding " .. index .. ".frontmostBundleID must be notion.id"
+      end
+    end
     local signature = bindingSignature(binding.modifiers, binding.key)
+    if signature == notionHotkeySignature and binding.frontmostBundleID ~= notionBundleID then
+      return false, "binding " .. index .. " must scope cmd+alt+c to notion.id"
+    end
     if seen[signature] then return false, "binding " .. index .. " duplicates modifier/key " .. signature end
     seen[signature] = true
   end
@@ -166,6 +179,7 @@ local function dispatch(action)
   if action.type == "url" then return urlCommands.run(action.command) end
   if action.type == "two_panes_finder" then return twoPanesFinder.run() end
   if action.type == "chicago_title_case" then return chicagoTitleCase.run() end
+  if action.type == "file_name_copy" then return fileNameCopy.run() end
   return utilityCommand.run(action.executablePath, action.scriptPath)
 end
 
@@ -173,27 +187,46 @@ local function callbackFor(action)
   return function() return dispatch(action) end
 end
 
-local function frontmostApplicationName()
+local function frontmostApplication()
   if type(hs) ~= "table" or type(hs.application) ~= "table"
       or type(hs.application.frontmostApplication) ~= "function" then
     return nil
   end
   local appOK, app = pcall(hs.application.frontmostApplication)
-  if not appOK or not app or type(app.name) ~= "function" then return nil end
+  if not appOK then return nil end
+  return app
+end
+
+local function frontmostApplicationName()
+  local app = frontmostApplication()
+  if not app or type(app.name) ~= "function" then return nil end
   local nameOK, name = pcall(app.name, app)
   if not nameOK then return nil end
   return name
 end
 
-local function exactFileNameCopyModifiers(flags)
-  if type(flags) ~= "table" or flags.cmd ~= true or flags.shift ~= true then return false end
+local function frontmostApplicationBundleID()
+  local app = frontmostApplication()
+  if not app or type(app.bundleID) ~= "function" then return nil end
+  local bundleOK, bundleID = pcall(app.bundleID, app)
+  if not bundleOK then return nil end
+  return bundleID
+end
+
+local function exactModifiers(flags, modifiers)
+  if type(flags) ~= "table" then return false end
+  local expected = {}
+  for _, modifier in ipairs(modifiers) do
+    expected[modifier] = true
+    if flags[modifier] ~= true then return false end
+  end
   for modifier, pressed in pairs(flags) do
-    if pressed and modifier ~= "cmd" and modifier ~= "shift" then return false end
+    if pressed and not expected[modifier] then return false end
   end
   return true
 end
 
-local function fileNameCopyEventCallback(event)
+local function fileNameCopyEventCallback(event, bindings)
   if not event or type(event.getType) ~= "function"
       or type(event.getFlags) ~= "function"
       or type(event.getKeyCode) ~= "function" then
@@ -201,19 +234,30 @@ local function fileNameCopyEventCallback(event)
   end
   local typeOK, eventType = pcall(event.getType, event)
   local keyOK, keyCode = pcall(event.getKeyCode, event)
-  local flagsOK, flags = pcall(event.getFlags, event)
-  if not typeOK or not keyOK or not flagsOK
+  if not typeOK or not keyOK
       or eventType ~= hs.eventtap.event.types.keyDown
-      or keyCode ~= 8
-      or not exactFileNameCopyModifiers(flags) then
+      or keyCode ~= 8 then
     return false
   end
-  local appName = frontmostApplicationName()
-  if appName ~= "Finder" and appName ~= "Cursor" then
-    return false
+  local flagsOK, flags = pcall(event.getFlags, event)
+  if not flagsOK then return false end
+  for _, binding in ipairs(bindings) do
+    if binding.key == "c" and exactModifiers(flags, binding.modifiers) then
+      if binding.frontmostBundleID ~= nil then
+        if frontmostApplicationBundleID() == binding.frontmostBundleID then
+          pcall(dispatch, binding.action)
+          return true
+        end
+      elseif binding.action.type == "file_name_copy" then
+        local appName = frontmostApplicationName()
+        if appName == "Finder" or appName == "Cursor" then
+          pcall(dispatch, binding.action)
+          return true
+        end
+      end
+    end
   end
-  pcall(fileNameCopy.run)
-  return true
+  return false
 end
 
 local function hsHotkeyBindAvailable()
@@ -255,7 +299,7 @@ function M.start()
 
   local newHandles = {}
   for index, binding in ipairs(bindings) do
-    if binding.action.type ~= "file_name_copy" then
+    if binding.action.type ~= "file_name_copy" and binding.frontmostBundleID == nil then
       local ok, handleOrError = pcall(hs.hotkey.bind, binding.modifiers, binding.key, callbackFor(binding.action))
       local handle = handleOrError
       if not ok or not handle then
@@ -268,7 +312,9 @@ function M.start()
   end
 
   local eventTapOK, eventTapOrError = pcall(hs.eventtap.new,
-    { hs.eventtap.event.types.keyDown }, fileNameCopyEventCallback)
+    { hs.eventtap.event.types.keyDown }, function(event)
+      return fileNameCopyEventCallback(event, bindings)
+    end)
   if not eventTapOK or not eventTapOrError then
     deleteHandles(newHandles)
     local reason = not eventTapOK and tostring(eventTapOrError) or "hs.eventtap.new returned no tap"
