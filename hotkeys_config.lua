@@ -88,6 +88,21 @@ return {
   { modifiers = { "cmd", "ctrl", "alt", "shift" }, key = "z", action = { type = "app", app = "zoom.us" } },
 
   -- ==============================
+  -- Cmd+Opt: Notion専用
+  -- ==============================
+
+  {
+    modifiers = { "cmd", "alt" },
+    key = "c",
+    frontmostBundleID = "notion.id",
+    action = {
+      type = "utility",
+      executablePath = "/bin/bash",
+      scriptPath = home .. "/Library/Mobile Documents/com~apple~CloudDocs/Dev/scripts/commands/notion-current-page.sh",
+    },
+  },
+
+  -- ==============================
   -- Cmd+Opt+Shift: AIコマンド / スクリプトコマンド
   -- ==============================
 
