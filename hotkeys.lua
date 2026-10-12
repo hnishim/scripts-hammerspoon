@@ -238,16 +238,17 @@ local function fileNameCopyEventCallback(event, bindings)
   if not flagsOK then return false end
   for _, binding in ipairs(bindings) do
     if binding.key == "c" and exactModifiers(flags, binding.modifiers) then
-      if binding.action.type == "file_name_copy" then
+      if binding.frontmostBundleID ~= nil then
+        if frontmostApplicationBundleID() == binding.frontmostBundleID then
+          pcall(dispatch, binding.action)
+          return true
+        end
+      elseif binding.action.type == "file_name_copy" then
         local appName = frontmostApplicationName()
         if appName == "Finder" or appName == "Cursor" then
           pcall(dispatch, binding.action)
           return true
         end
-      elseif binding.frontmostBundleID ~= nil
-          and frontmostApplicationBundleID() == binding.frontmostBundleID then
-        pcall(dispatch, binding.action)
-        return true
       end
     end
   end
